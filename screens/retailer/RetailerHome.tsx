@@ -1,3 +1,7 @@
+import { CartSettings, DealerProductSchemaField, resolveCartDisplaySettings, useDealerDisplaySettings } from '../../src/lib/cartSettings';
+import { useServerPage, useDebouncedValue } from '../../src/lib/useServerPage';
+import PageControls from '../../components/PageControls';
+import { useWindowDimensions } from 'react-native';
 import React, { useEffect, useState, useCallback, useMemo, memo } from 'react';
 import {
   View,
@@ -6,7 +10,6 @@ import {
   FlatList,
   Pressable,
   ActivityIndicator,
-  ScrollView,
   Image,
   Modal,
   StyleSheet,
@@ -19,61 +22,121 @@ import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../types/navigation';
 import { apiUrl } from 'apiurl';
 import RefreshWrapper from 'components/RefreshWrapper';
+import KeyboardAwareScrollView from 'components/KeyboardAwareScrollView';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Navbar from 'components/Navbar';
-import ProductCart, { Product, ProductVariant, CartItem } from 'components/ProductCart';
+import ProductCart, {
+  Product,
+  ProductVariant,
+  CartItem,
+  AddVariantOptions,
+} from 'components/ProductCart';
 import { useCart } from '../../context/CartContext';
+import { createCartSnapshotItem, getCartLinePieceQuantity } from '../../src/lib/cart';
+import { OMS_COLORS } from '../../src/lib/theme';
+import {
+  DEFAULT_PRODUCT_LIST_SETTINGS,
+  loadProductListSettings,
+  ProductListSettings,
+} from '../../src/lib/dealerSettings';
 
 // NOTE: @react-native-voice/voice removed — requires custom native build, not supported in Expo Go.
 
 interface RenderItemProps {
   item: Product;
+  businessTypeId?: number | null;
   cart: CartItem[];
-  onAddVariant: (productId: number, variant: ProductVariant, qty: number) => void;
-  onUpdateVariantQty: (productId: number, variantId: number, qty: number) => void;
-  onRemoveVariant: (productId: number, variantId: number) => void;
-  onAddSimple: (productId: number) => void;
+  onAddVariant: (
+    product: Product,
+    variant: ProductVariant,
+    qty: number,
+    options?: AddVariantOptions
+  ) => void;
+  onUpdateVariantQty: (
+    productId: number,
+    variantId: number | string,
+    qty: number,
+    color?: string
+  ) => void;
+  onRemoveVariant: (productId: number, variantId: number | string, color?: string) => void;
+  onAddSimple: (product: Product, quantity?: number) => void;
   onUpdateSimpleQty: (productId: number, qty: number) => void;
   onRemoveSimple: (productId: number) => void;
+  onOpenDetails: (product: Product) => void;
+  productListSettings: ProductListSettings;
+  productFieldSettings: ReturnType<typeof useDealerDisplaySettings>['fieldSettings'];
+  productSectionSettings: ReturnType<typeof useDealerDisplaySettings>['sectionSettings'];
+  cartSettings: CartSettings;
+  schemaFields: DealerProductSchemaField[] | null;
 }
 
-const MemoProductCard = memo(({
-  item,
-  cart,
-  onAddVariant,
-  onUpdateVariantQty,
-  onRemoveVariant,
-  onAddSimple,
-  onUpdateSimpleQty,
-  onRemoveSimple,
-}: RenderItemProps) => (
-  <ProductCart
-    product={item}
-    showSize={Number(item.business_type_id) === 2}
-    cart={cart}
-    onAddVariant={onAddVariant}
-    onUpdateVariantQty={onUpdateVariantQty}
-    onRemoveVariant={onRemoveVariant}
-    onAddSimple={onAddSimple}
-    onUpdateSimpleQty={onUpdateSimpleQty}
-    onRemoveSimple={onRemoveSimple}
-  />
-));
+const MemoProductCard = memo(
+  ({
+    item,
+    businessTypeId,
+    cart,
+    onAddVariant,
+    onUpdateVariantQty,
+    onRemoveVariant,
+    onAddSimple,
+    onUpdateSimpleQty,
+    onRemoveSimple,
+    onOpenDetails,
+    productListSettings,
+    productFieldSettings,
+    productSectionSettings,
+    cartSettings,
+    schemaFields,
+  }: RenderItemProps) => {
+    const effectiveBusinessTypeId =
+      businessTypeId ?? item.business_type_id ?? null;
+    const normalizedProduct = {
+      ...item,
+      business_type_id: effectiveBusinessTypeId,
+    };
+
+    return (
+      <View style={{ flex: 1, marginHorizontal: 4 }}><ProductCart
+        product={normalizedProduct}
+        showSize={Number(effectiveBusinessTypeId) === 2}
+        onOpenDetails={onOpenDetails}
+        cart={cart}
+        onAddVariant={onAddVariant}
+        onUpdateVariantQty={onUpdateVariantQty}
+        onRemoveVariant={onRemoveVariant}
+        onAddSimple={onAddSimple}
+        onUpdateSimpleQty={onUpdateSimpleQty}
+        onRemoveSimple={onRemoveSimple}
+        cartSettings={cartSettings}
+        productListSettings={productListSettings}
+        productFieldSettings={productFieldSettings}
+        productSectionSettings={productSectionSettings}
+        schemaFields={schemaFields}
+      /></View>
+    );
+  }
+);
 MemoProductCard.displayName = 'MemoProductCard';
 
 export default function RetailerHome() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
-  const [products, setProducts] = useState<Product[]>([]);
-  const [filteredProducts, setFilteredProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
   const { cart, addToCart, updateCartQuantity, removeFromCart } = useCart();
   const [user, setUser] = useState<any>(null);
-  const [loading, setLoading] = useState(true);
+  const query = useDebouncedValue(search);
+  const page = useServerPage<Product>(user?.dealer_id ? `/products?dealerid=${user.dealer_id}&create_order=1&search=${encodeURIComponent(query)}` : null, 'products');
+  const filteredProducts = page.rows.map(item => ({ ...item, id: Number(item.id), price: Number(item.effective_rate ?? item.price), effective_rate: item.effective_rate == null ? undefined : Number(item.effective_rate), party_rate: item.party_rate == null ? undefined : Number(item.party_rate), dealerid: Number(item.dealerid), stock: Number(item.stock) }));
+  const loading = page.loading;
+  const display = useDealerDisplaySettings(user?.dealer_id, user?.business_type_id);
+  const cartSettings = display.cart;
+  const { width } = useWindowDimensions();
+  const columns = Math.max(1, Math.min(cartSettings.cardsPerRow, Math.floor((width - 24) / 280)));
   const [alertVisible, setAlertVisible] = useState(false);
   const [alertMsg, setAlertMsg] = useState('');
   const [imageModalVisible, setImageModalVisible] = useState(false);
   const [modalImage, setModalImage] = useState<string | null>(null);
+  const productListSettings = display.list;
 
   const showAlert = useCallback((msg: string) => {
     setAlertMsg(msg);
@@ -81,53 +144,42 @@ export default function RetailerHome() {
   }, []);
 
   const handleAddVariant = useCallback(
-    (productId: number, variant: ProductVariant, qty: number) => {
-      addToCart({
-        productId,
-        variantId: variant.id,
-        size: variant.size,
-        color: variant.color,
-        price: variant.rate ?? variant.mrp ?? 0,
-        quantity: qty,
-        stock: variant.qty,
-      });
+    (
+      product: Product,
+      variant: ProductVariant,
+      qty: number,
+      options?: AddVariantOptions
+    ) => {
+      addToCart(createCartSnapshotItem(product, qty, variant, options));
       showAlert('Added to cart');
     },
     [addToCart, showAlert]
   );
 
   const handleUpdateVariantQty = useCallback(
-    (productId: number, variantId: number, qty: number) => {
+    (productId: number, variantId: number | string, qty: number, color?: string) => {
       if (qty <= 0) {
-        removeFromCart(productId, variantId);
+        removeFromCart(productId, variantId, color);
       } else {
-        updateCartQuantity(productId, variantId, Math.min(qty, 999));
+        updateCartQuantity(productId, variantId, Math.min(qty, 999), color);
       }
     },
     [removeFromCart, updateCartQuantity]
   );
 
   const handleRemoveVariant = useCallback(
-    (productId: number, variantId: number) => {
-      removeFromCart(productId, variantId);
+    (productId: number, variantId: number | string, color?: string) => {
+      removeFromCart(productId, variantId, color);
     },
     [removeFromCart]
   );
 
   const handleAddSimple = useCallback(
-    (productId: number) => {
-      const product = products.find((p) => p.id === productId);
-      if (!product) return;
-      addToCart({
-        productId,
-        variantId: 0,
-        price: product.price,
-        quantity: 1,
-        stock: product.stock,
-      });
+    (product: Product, quantity = 1) => {
+      addToCart(createCartSnapshotItem(product, quantity));
       showAlert('Added to cart');
     },
-    [products, addToCart, showAlert]
+    [addToCart, showAlert]
   );
 
   const handleUpdateSimpleQty = useCallback(
@@ -148,8 +200,19 @@ export default function RetailerHome() {
     [removeFromCart]
   );
 
+  const handleOpenDetails = useCallback(
+    (product: Product) => {
+      navigation.navigate('ProductDetails', {
+        productId: product.id,
+        product,
+        businessTypeId: user?.business_type_id ?? product.business_type_id ?? null,
+      });
+    },
+    [navigation, user?.business_type_id]
+  );
+
   const totalCartItems = useMemo(
-    () => cart.reduce((s, c) => s + c.quantity, 0),
+    () => cart.reduce((s, c) => s + getCartLinePieceQuantity(c), 0),
     [cart]
   );
 
@@ -161,118 +224,62 @@ export default function RetailerHome() {
   useEffect(() => {
     const fetchUser = async () => {
       const userString = await AsyncStorage.getItem('user');
-      if (!userString) { navigation.replace('Login'); return; }
+      if (!userString) {
+        navigation.replace('Login');
+        return;
+      }
       const parsed = JSON.parse(userString);
-      if (parsed.role !== 'retailer') { navigation.replace('Login'); return; }
+      if (parsed.role !== 'retailer') {
+        navigation.replace('Login');
+        return;
+      }
     };
     fetchUser();
   }, [navigation]);
 
-  const fetchProducts = useCallback(async (dealerId: number) => {
-    if (!dealerId) return;
-    setLoading(true);
-    try {
-      const response = await fetch(`${apiUrl}/products?dealerid=${dealerId}`);
-      const data = await response.json();
-
-      const formatted: Product[] = (data.products || data).map((item: any) => {
-        let attrs: Record<string, string> = {};
-        if (item.attributes) {
-          attrs = typeof item.attributes === 'string'
-            ? JSON.parse(item.attributes)
-            : item.attributes;
-        }
-        return {
-          id: Number(item.id),
-          name: item.name || '',
-          brand: item.brand || attrs.brand || '',
-          model: item.model || attrs.model || '',
-          price: Number(item.price),
-          stock: Number(item.stock),
-          description: item.description || '',
-          dealerid: Number(item.dealerid),
-          image: item.image || null,
-          attributes: attrs,
-          business_type_id: item.business_type_id ?? null,
-          variants: item.variants ?? [],
-        };
-      });
-
-      setProducts(formatted);
-      setFilteredProducts(formatted);
-
-      const validIds = new Set(formatted.map((p) => p.id));
-      const staleIds = cart
-        .filter((c) => !validIds.has(c.productId))
-        .map((c) => ({ productId: c.productId, variantId: c.variantId }));
-
-      if (staleIds.length > 0) {
-        setTimeout(() => {
-          staleIds.forEach(({ productId, variantId }) =>
-            removeFromCart(productId, variantId)
-          );
-        }, 0);
-      }
-    } catch (err) {
-      console.error('Error fetching products:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [cart, removeFromCart]);
-
   useEffect(() => {
-    const boot = async () => {
-      const userData = await AsyncStorage.getItem('user');
-      if (userData) {
-        const parsed = JSON.parse(userData);
-        setUser(parsed);
-        fetchProducts(parsed.dealer_id);
-      }
-    };
-    boot();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    void AsyncStorage.getItem('user').then(raw => { if (raw) setUser(JSON.parse(raw)); }).catch(error => console.warn('Account load failed', error));
   }, []);
+  const handleSearch = setSearch;
+  const renderItem = useCallback(
+    ({ item }: { item: Product }) => (
+      <MemoProductCard
+        item={item}
+        businessTypeId={user?.business_type_id}
+        cart={cart}
+        onAddVariant={handleAddVariant}
+        onUpdateVariantQty={handleUpdateVariantQty}
+        onRemoveVariant={handleRemoveVariant}
+        onAddSimple={handleAddSimple}
+            onUpdateSimpleQty={handleUpdateSimpleQty}
+            onRemoveSimple={handleRemoveSimple}
+            onOpenDetails={handleOpenDetails}
+        cartSettings={cartSettings}
+        productListSettings={productListSettings}
+        productFieldSettings={display.fieldSettings}
+        productSectionSettings={display.sectionSettings}
+        schemaFields={display.schemaFields}
+      />
+    ),
+    [
+      cart,
+      user?.business_type_id,
+      handleAddVariant,
+      handleUpdateVariantQty,
+      handleRemoveVariant,
+      handleAddSimple,
+      handleUpdateSimpleQty,
+      handleRemoveSimple,
+      handleOpenDetails,
+      cartSettings,
+      productListSettings,
+      display.fieldSettings,
+      display.sectionSettings,
+      display.schemaFields,
+    ]
+  );
 
-  const handleSearch = useCallback((query: string) => {
-    setSearch(query);
-    const q = query.toLowerCase();
-    setFilteredProducts(
-      products.filter(
-        (p) =>
-          p.name.toLowerCase().includes(q) ||
-          (p.brand ?? '').toLowerCase().includes(q) ||
-          (p.model ?? '').toLowerCase().includes(q) ||
-          Object.values(p.attributes ?? {}).some((v) =>
-            String(v).toLowerCase().includes(q)
-          )
-      )
-    );
-  }, [products]);
-
-  const renderItem = useCallback(({ item }: { item: Product }) => (
-    <MemoProductCard
-      item={item}
-      cart={cart}
-      onAddVariant={handleAddVariant}
-      onUpdateVariantQty={handleUpdateVariantQty}
-      onRemoveVariant={handleRemoveVariant}
-      onAddSimple={handleAddSimple}
-      onUpdateSimpleQty={handleUpdateSimpleQty}
-      onRemoveSimple={handleRemoveSimple}
-    />
-  ), [
-    cart,
-    handleAddVariant,
-    handleUpdateVariantQty,
-    handleRemoveVariant,
-    handleAddSimple,
-    handleUpdateSimpleQty,
-    handleRemoveSimple,
-  ]);
-
-  const handleRefresh = useCallback(async () => {
-    if (user?.dealer_id) await fetchProducts(user.dealer_id);
-  }, [user, fetchProducts]);
+  const handleRefresh = page.refresh;
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top']}>
@@ -280,26 +287,20 @@ export default function RetailerHome() {
 
       {/* Image zoom modal */}
       <Modal
-        visible={imageModalVisible}
+        visible={imageModalVisible && resolveCartDisplaySettings(display.cart, display.list, display.schemaFields, user?.business_type_id, display.fieldSettings, display.sectionSettings).visibleDetails.image}
         transparent
         animationType="fade"
-        onRequestClose={() => setImageModalVisible(false)}
-      >
+        onRequestClose={() => setImageModalVisible(false)}>
         <Pressable style={styles.modalOverlay} onPress={() => setImageModalVisible(false)}>
-          <Image
-            source={{ uri: modalImage! }}
-            style={styles.modalImage}
-            resizeMode="contain"
-          />
+          <Image source={{ uri: modalImage! }} style={styles.modalImage} resizeMode="contain" />
         </Pressable>
       </Modal>
 
       <RefreshWrapper onRefresh={handleRefresh}>
-        <ScrollView
-          style={{ flex: 1 }}
+        <KeyboardAwareScrollView
+          style={styles.scrollView}
           contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-        >
+          extraScrollHeight={36}>
           <Text style={styles.pageTitle}>Browse Products</Text>
           <Text style={styles.pageSubtitle}>Add products to your cart for bulk ordering</Text>
 
@@ -327,11 +328,13 @@ export default function RetailerHome() {
           </View>
 
           {loading ? (
-            <ActivityIndicator size="large" color="#185FA5" style={{ marginTop: 40 }} />
-          ) : filteredProducts.length === 0 ? (
+            <ActivityIndicator size="large" color="#FFFFFF" style={{ marginTop: 40 }} />
+          ) : page.error ? (<Text style={styles.emptyText}>{page.error}</Text>) : filteredProducts.length === 0 ? (
             <Text style={styles.emptyText}>No products found.</Text>
           ) : (
             <FlatList
+              key={`products-${columns}`}
+              numColumns={columns}
               data={filteredProducts}
               keyExtractor={(item) => item.id.toString()}
               renderItem={renderItem}
@@ -351,7 +354,8 @@ export default function RetailerHome() {
           />
 
           <View style={{ height: 16 }} />
-        </ScrollView>
+          <PageControls key={page.key} page={page.page} total={page.total} hasMore={page.hasMore} loading={page.loading} go={page.go} refresh={page.refresh} />
+        </KeyboardAwareScrollView>
       </RefreshWrapper>
 
       <BottomTabNavigator />
@@ -362,40 +366,43 @@ export default function RetailerHome() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: 'transparent',
+  },
+  scrollView: {
+    backgroundColor: 'transparent',
   },
   scrollContent: {
-    paddingHorizontal: 16,
-    paddingTop: 16,
+    paddingHorizontal: 12,
+    paddingTop: 12,
     paddingBottom: 100,
   },
   pageTitle: {
-    fontSize: 22,
-    fontWeight: '500',
-    color: '#111827',
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#FFFFFF',
     marginBottom: 4,
   },
   pageSubtitle: {
-    fontSize: 13,
-    color: '#6B7280',
-    marginBottom: 12,
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.82)',
+    marginBottom: 10,
   },
   cartStrip: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    borderRadius: 10,
+    backgroundColor: OMS_COLORS.surfaceTint,
+    borderRadius: 14,
     padding: 10,
     marginBottom: 12,
     borderWidth: 0.5,
-    borderColor: '#BFDBFE',
+    borderColor: OMS_COLORS.primaryBorder,
     gap: 8,
   },
   cartStripBadge: {
     width: 22,
     height: 22,
     borderRadius: 11,
-    backgroundColor: '#185FA5',
+    backgroundColor: OMS_COLORS.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -407,13 +414,13 @@ const styles = StyleSheet.create({
   cartStripText: {
     flex: 1,
     fontSize: 13,
-    color: '#185FA5',
-    fontWeight: '500',
+    color: OMS_COLORS.primaryDeep,
+    fontWeight: '700',
   },
   cartStripTotal: {
     fontSize: 13,
-    fontWeight: '500',
-    color: '#185FA5',
+    fontWeight: '800',
+    color: OMS_COLORS.primaryDeep,
   },
   searchRow: {
     flexDirection: 'row',
@@ -425,10 +432,10 @@ const styles = StyleSheet.create({
     flex: 1,
     height: 42,
     borderWidth: 0.5,
-    borderColor: '#D1D5DB',
-    borderRadius: 10,
+    borderColor: 'rgba(255,255,255,0.72)',
+    borderRadius: 14,
     paddingHorizontal: 14,
-    backgroundColor: '#fff',
+    backgroundColor: 'rgba(255,255,255,0.94)',
     fontSize: 14,
     color: '#111827',
   },

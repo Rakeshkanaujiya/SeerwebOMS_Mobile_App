@@ -6,10 +6,10 @@
  * immediately from cached data with zero visible loading delay.
  * Data is refreshed silently in the background.
  */
-import React, { useEffect, useState, useMemo, memo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, memo, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, Pressable,
-  Linking, StyleSheet, ActivityIndicator,
+  Linking, StyleSheet, ActivityIndicator, Animated,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation, CommonActions } from '@react-navigation/native';
@@ -19,14 +19,41 @@ import RefreshWrapper from '../../components/RefreshWrapper';
 import BottomTabNavigator, { screenDataCache } from '../../components/BottomTabNavigator';
 import Svg, { Path, G, Text as SvgText } from 'react-native-svg';
 import { Ionicons, Feather } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import { apiGet } from '../../src/lib/services/api';
+import { apiGet, cachedGet } from '../../src/lib/services/api';
 import Navbar from '../../components/Navbar';
+import AppScreen from '../../components/AppScreen';
+import { OMS_COLORS } from '../../src/lib/theme';
 
 const CACHE_KEY = 'StaffDashboard';
 
 type OrderItem = { quantity: number; price: number };
-type Order = { id: number; ledgerName: string; createdAt: string; items: OrderItem[]; status?: string };
+type Order = {
+  id: number;
+  ledgerName?: string;
+  ledger?: string;
+  retailerStoreName?: string;
+  retailerName?: string;
+  createdAt: string;
+  items: OrderItem[];
+  status?: string;
+};
+
+type DashboardSummary = {
+  totalOrders: number;
+  totalCustomers: number;
+  pending: number;
+  approved: number;
+  delivered: number;
+  recentOrders: {
+    id: number;
+    ledger: string;
+    itemCount: number;
+    total: number;
+    date: string;
+    status: string;
+  }[];
+  topCustomers: any[];
+};
 
 // ── Memoized StatCard ─────────────────────────────────────────────────────────
 const StatCard = memo(({ title, value, icon, bgColor, change }: {
@@ -99,6 +126,67 @@ const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
 };
 const LAST_MONTH = { totalOrders: 5, totalCustomers: 4, pendingOrders: 1 };
 
+const resolveDealerCompanyName = (...sources: any[]) => {
+  for (const source of sources) {
+    const companyName = String(
+      source?.dealer_company_name ??
+      source?.dealerCompanyName ??
+      source?.company_name ??
+      source?.companyName ??
+      source?.dealer?.company_name ??
+      source?.dealer?.companyName ??
+      ''
+    ).trim();
+    if (companyName) return companyName;
+  }
+  return '';
+};
+
+const WelcomeBanner = memo(({ companyName }: { companyName: string }) => {
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const translateAnim = useRef(new Animated.Value(12)).current;
+
+  useEffect(() => {
+    fadeAnim.setValue(0);
+    translateAnim.setValue(12);
+    Animated.parallel([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 520,
+        useNativeDriver: true,
+      }),
+      Animated.spring(translateAnim, {
+        toValue: 0,
+        friction: 8,
+        tension: 55,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [companyName, fadeAnim, translateAnim]);
+
+  if (!companyName) return null;
+
+  return (
+    <Animated.View
+      style={[
+        styles.welcomeCard,
+        {
+          opacity: fadeAnim,
+          transform: [{ translateY: translateAnim }],
+        },
+      ]}
+    >
+      <View style={styles.welcomeIcon}>
+        <Feather name="home" size={16} color={OMS_COLORS.primary} />
+      </View>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Text style={styles.welcomeEyebrow}>Welcome to</Text>
+        <Text style={styles.welcomeTitle} numberOfLines={2}>{companyName}</Text>
+      </View>
+    </Animated.View>
+  );
+});
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function StaffDashboard() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -108,43 +196,108 @@ export default function StaffDashboard() {
   const [user, setUser]         = useState<any>(cached?.user ?? null);
   const [orders, setOrders]     = useState<Order[]>(cached?.orders ?? []);
   const [retailers, setRetailers] = useState<any[]>(cached?.retailers ?? []);
+  const [summary, setSummary] = useState<DashboardSummary | null>(cached?.summary ?? null);
+  const [dealerCompanyName, setDealerCompanyName] = useState<string>(
+    cached?.dealerCompanyName ?? resolveDealerCompanyName(cached?.user)
+  );
   const [loading, setLoading]   = useState(!cached); // skip loading if cache exists
 
-  const fetchData = useCallback(async (executiveId: number, silent = false) => {
+  const fetchData = useCallback(async (activeUser: any, silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [ordersRes, retailersRes] = await Promise.all([
-        apiGet(`/orders/byexecutive?executiveid=${executiveId}`),
-        apiGet(`/staff/get_retailers_by_executive?executiveid=${executiveId}`),
-      ]);
-      const norm = (d: any) => Array.isArray(d) ? d : Array.isArray(d?.orders) ? d.orders : Array.isArray(d?.data) ? d.data : [];
-      const o = norm(ordersRes);
-      const r = norm(retailersRes);
-      setOrders(o);
-      setRetailers(r);
+      const dealerId = Number(activeUser?.role === 'dealer' ? activeUser?.id : activeUser?.dealer_id);
+      const executiveId = Number(activeUser?.id);
+      if (!dealerId || !Number.isFinite(dealerId)) return;
+      const endpoint =
+        activeUser?.role === 'dealer'
+          ? `/orders/dashboard?dealerId=${dealerId}`
+          : `/orders/dashboard?dealerId=${dealerId}&executiveid=${executiveId}`;
+
+      const data = silent ? await cachedGet(endpoint) : await apiGet(endpoint);
+      const nextSummary: DashboardSummary = {
+        totalOrders: Number(data?.totalOrders ?? 0),
+        totalCustomers: Number(data?.totalCustomers ?? 0),
+        pending: Number(data?.pending ?? 0),
+        approved: Number(data?.approved ?? 0),
+        delivered: Number(data?.delivered ?? 0),
+        recentOrders: Array.isArray(data?.recentOrders) ? data.recentOrders : [],
+        topCustomers: Array.isArray(data?.topCustomers) ? data.topCustomers : [],
+      };
+      const companyName = resolveDealerCompanyName(activeUser);
+      setSummary(nextSummary);
+      setOrders([]);
+      setRetailers(nextSummary.topCustomers);
+      if (companyName) setDealerCompanyName(companyName);
       // ✅ Save to cache so next remount is instant
-      screenDataCache[CACHE_KEY] = { user, orders: o, retailers: r };
+      screenDataCache[CACHE_KEY] = {
+        user: activeUser,
+        summary: nextSummary,
+        orders: [],
+        retailers: nextSummary.topCustomers,
+        dealerCompanyName: companyName || dealerCompanyName,
+      };
     } catch (e) {
       console.error('Dashboard load failed:', e);
+      try {
+        const dealerId = Number(activeUser?.role === 'dealer' ? activeUser?.id : activeUser?.dealer_id);
+        const executiveId = Number(activeUser?.id);
+        const ordersEndpoint =
+          activeUser?.role === 'dealer'
+            ? `/orders/fordealer?dealerId=${dealerId}`
+            : `/orders/byexecutive?executiveid=${executiveId}`;
+        const [ordersRes, retailersRes] = await Promise.all([
+          apiGet(ordersEndpoint),
+          apiGet(`/retailers?dealerid=${dealerId}`),
+        ]);
+        const norm = (d: any) => Array.isArray(d) ? d : Array.isArray(d?.orders) ? d.orders : Array.isArray(d?.data) ? d.data : [];
+        const o = norm(ordersRes);
+        const r = norm(retailersRes);
+        setSummary(null);
+        setOrders(o);
+        setRetailers(r);
+        screenDataCache[CACHE_KEY] = {
+          ...screenDataCache[CACHE_KEY],
+          user: activeUser,
+          summary: null,
+          orders: o,
+          retailers: r,
+        };
+      } catch (fallbackError) {
+        console.error('Dashboard fallback load failed:', fallbackError);
+      }
     } finally {
       setLoading(false);
     }
-  }, [user]);
+  }, [dealerCompanyName]);
 
   useEffect(() => {
     const init = async () => {
       const userStr = await AsyncStorage.getItem('user');
       if (!userStr) { navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: 'Login' }] })); return; }
       const userData = JSON.parse(userStr);
-      if (userData.role !== 'staff') { navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: 'Login' }] })); return; }
+      if (userData.role !== 'staff' && userData.role !== 'dealer') {
+        navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: 'Login' }] }));
+        return;
+      }
+      const dealerId = Number(userData.role === 'dealer' ? userData.id : userData.dealer_id);
+      if (!dealerId || !Number.isFinite(dealerId)) {
+        navigation.dispatch(CommonActions.reset({ index: 0, routes: [{ name: 'Login' }] }));
+        return;
+      }
       setUser(userData);
-      screenDataCache[CACHE_KEY] = { ...screenDataCache[CACHE_KEY], user: userData };
+      const cachedCompanyName = resolveDealerCompanyName(userData);
+      if (cachedCompanyName) setDealerCompanyName(cachedCompanyName);
+      screenDataCache[CACHE_KEY] = {
+        ...screenDataCache[CACHE_KEY],
+        user: userData,
+        dealerCompanyName: cachedCompanyName || screenDataCache[CACHE_KEY]?.dealerCompanyName,
+      };
 
       if (cached) {
         // ✅ Already rendered from cache — refresh silently in background
-        fetchData(userData.id, true);
+        fetchData(userData, true);
       } else {
-        fetchData(userData.id, false);
+        fetchData(userData, false);
       }
     };
     init();
@@ -152,6 +305,26 @@ export default function StaffDashboard() {
 
   // ── Single-pass stats ─────────────────────────────────────────────────────
   const dash = useMemo(() => {
+    if (summary) {
+      const calc = (c: number, p: number) => p === 0 ? (c > 0 ? 100 : 0) : ((c - p) / p) * 100;
+      return {
+        totalOrders: summary.totalOrders,
+        pending: summary.pending,
+        approved: summary.approved,
+        delivered: summary.delivered,
+        totalCustomers: summary.totalCustomers,
+        totalOrdersChange: calc(summary.totalOrders, LAST_MONTH.totalOrders),
+        customersChange: calc(summary.totalCustomers, LAST_MONTH.totalCustomers),
+        pendingChange: calc(summary.pending, LAST_MONTH.pendingOrders),
+        statusDist: [
+          { label: 'Pending', value: summary.pending, color: '#f59e0b' },
+          { label: 'Approved', value: summary.approved, color: '#3b82f6' },
+          { label: 'Delivered', value: summary.delivered, color: '#10b981' },
+        ],
+        recentOrders: summary.recentOrders,
+      };
+    }
+
     let pending = 0, approved = 0, delivered = 0;
     const recent: Order[] = [];
     for (let i = 0; i < orders.length; i++) {
@@ -166,7 +339,8 @@ export default function StaffDashboard() {
     const recentOrders = recent.map(o => {
       const items = Array.isArray(o.items) ? o.items : [];
       return {
-        id: o.id, storeName: o.ledgerName,
+        id: o.id,
+        ledger: o.ledgerName ?? o.ledger ?? o.retailerStoreName ?? o.retailerName ?? `Order #${o.id}`,
         itemCount: items.reduce((s, i) => s + i.quantity, 0),
         total: items.reduce((s, i) => s + i.quantity * i.price, 0),
         date: o.createdAt, status: o.status ?? 'pending',
@@ -185,12 +359,12 @@ export default function StaffDashboard() {
       ],
       recentOrders,
     };
-  }, [orders, retailers]);
+  }, [orders, retailers, summary]);
 
-  const topCustomers = useMemo(() => retailers.slice(0, 3), [retailers]);
+  const topCustomers = useMemo(() => summary?.topCustomers ?? retailers.slice(0, 3), [retailers, summary]);
 
   const handleRefresh = useCallback(async () => {
-    if (user?.id) await fetchData(user.id, false);
+    if (user?.id) await fetchData(user, false);
   }, [user, fetchData]);
 
   // ✅ All internal navigation also uses reset to prevent overlap
@@ -199,7 +373,7 @@ export default function StaffDashboard() {
   }, [navigation]);
 
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+    <AppScreen>
       <Navbar user={user?.name} />
 
       {loading ? (
@@ -212,10 +386,12 @@ export default function StaffDashboard() {
             contentContainerStyle={{ paddingBottom: 100 }}
             removeClippedSubviews
           >
+            <WelcomeBanner companyName={dealerCompanyName} />
+
             {/* Stats */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }} contentContainerStyle={{ paddingRight: 16 }}>
-              <StatCard title="Total Orders" value={dash.totalOrders} icon={<Feather name="shopping-bag" size={18} color="#3b82f6" />} bgColor="#dbeafe" change={dash.totalOrdersChange} />
-              <StatCard title="Customers" value={dash.totalCustomers} icon={<Feather name="users" size={18} color="#8b5cf6" />} bgColor="#ede9fe" change={dash.customersChange} />
+              <StatCard title="Total Orders" value={dash.totalOrders} icon={<Feather name="shopping-bag" size={18} color={OMS_COLORS.primary} />} bgColor={OMS_COLORS.primarySoft} change={dash.totalOrdersChange} />
+              <StatCard title="Customers" value={dash.totalCustomers} icon={<Feather name="users" size={18} color={OMS_COLORS.accentDark} />} bgColor={OMS_COLORS.accentSoft} change={dash.customersChange} />
               <StatCard title="Pending" value={dash.pending} icon={<Feather name="clock" size={18} color="#f59e0b" />} bgColor="#fef3c7" change={dash.pendingChange} />
               <StatCard title="Delivered" value={dash.delivered} icon={<Feather name="check-circle" size={18} color="#10b981" />} bgColor="#d1fae5" />
             </ScrollView>
@@ -244,10 +420,10 @@ export default function StaffDashboard() {
                   <Pressable key={c.id} style={styles.customerRow} onPress={() => c.phone && Linking.openURL(`tel:${c.phone}`)}>
                     <View style={styles.avatar}><Text style={styles.avatarText}>{c.name.charAt(0)}</Text></View>
                     <View style={{ flex: 1 }}>
-                      <Text style={styles.customerName} numberOfLines={1}>{c.store_name}</Text>
+                      <Text style={styles.customerName} numberOfLines={1}>{c.ledger}</Text>
                       <Text style={styles.customerSub}>{c.name}</Text>
                     </View>
-                    <Ionicons name="call-outline" size={14} color="#3b82f6" />
+                    <Ionicons name="call-outline" size={14} color={OMS_COLORS.accentDark} />
                   </Pressable>
                 ))}
               </View>
@@ -263,7 +439,7 @@ export default function StaffDashboard() {
                 <View key={order.id} style={[styles.orderRow, i !== dash.recentOrders.length - 1 && { borderBottomWidth: 1, borderBottomColor: '#f3f4f6' }]}>
                   <View style={styles.orderIcon}><Feather name="package" size={16} color="#6366f1" /></View>
                   <View style={{ flex: 1 }}>
-                    <Text style={styles.orderName}>#{order.id} - {order.storeName}</Text>
+                    <Text style={styles.orderName}>#{order.id} - {order.ledger}</Text>
                     <Text style={styles.orderSub}>{order.itemCount} items · {new Date(order.date).toLocaleDateString('en-IN')}</Text>
                   </View>
                   <View style={{ alignItems: 'flex-end' }}>
@@ -296,14 +472,51 @@ export default function StaffDashboard() {
       )}
 
       <BottomTabNavigator />
-    </SafeAreaView>
+    </AppScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: '#fff', borderRadius: 16, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
-  cardTitle: { fontSize: 14, fontWeight: '600', color: '#1f2937', marginBottom: 8 },
-  statCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, minWidth: 150, marginRight: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  welcomeCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(255,255,255,0.94)',
+    borderRadius: 18,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.75)',
+    shadowColor: OMS_COLORS.primaryDeep,
+    shadowOffset: { width: 0, height: 5 },
+    shadowOpacity: 0.14,
+    shadowRadius: 10,
+    elevation: 4,
+  },
+  welcomeIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
+    backgroundColor: OMS_COLORS.primarySoft,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  welcomeEyebrow: {
+    color: OMS_COLORS.textMuted,
+    fontSize: 12,
+    fontWeight: '600',
+    marginBottom: 2,
+  },
+  welcomeTitle: {
+    color: OMS_COLORS.primaryDeep,
+    fontSize: 20,
+    lineHeight: 25,
+    fontWeight: '800',
+  },
+  card: { backgroundColor: OMS_COLORS.surfaceTint, borderRadius: 18, padding: 16, shadowColor: OMS_COLORS.primaryDeep, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)' },
+  cardTitle: { fontSize: 14, fontWeight: '800', color: OMS_COLORS.primaryDeep, marginBottom: 8 },
+  statCard: { backgroundColor: OMS_COLORS.surfaceTint, borderRadius: 18, padding: 16, minWidth: 150, marginRight: 8, shadowColor: OMS_COLORS.primaryDeep, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)' },
   statRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
   statTitle: { color: '#6b7280', fontSize: 12, fontWeight: '500', flex: 1 },
   statIcon: { padding: 8, borderRadius: 12 },
@@ -313,22 +526,22 @@ const styles = StyleSheet.create({
   changeText: { fontSize: 11, fontWeight: '600' },
   changeLabel: { color: '#9ca3af', fontSize: 10, marginLeft: 4 },
   customerRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8, borderBottomWidth: 1, borderBottomColor: '#f3f4f6' },
-  avatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#dbeafe', alignItems: 'center', justifyContent: 'center', marginRight: 8 },
-  avatarText: { color: '#2563eb', fontWeight: '700', fontSize: 12 },
+  avatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: OMS_COLORS.accentSoft, alignItems: 'center', justifyContent: 'center', marginRight: 8 },
+  avatarText: { color: OMS_COLORS.primary, fontWeight: '700', fontSize: 12 },
   customerName: { fontSize: 12, fontWeight: '500', color: '#1f2937' },
   customerSub: { fontSize: 10, color: '#6b7280' },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  viewAll: { color: '#2563eb', fontSize: 12, fontWeight: '500' },
+  viewAll: { color: OMS_COLORS.accentDark, fontSize: 12, fontWeight: '700' },
   orderRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12 },
-  orderIcon: { backgroundColor: '#eef2ff', padding: 8, borderRadius: 8, marginRight: 12 },
+  orderIcon: { backgroundColor: OMS_COLORS.primarySoft, padding: 8, borderRadius: 8, marginRight: 12 },
   orderName: { fontSize: 14, fontWeight: '500', color: '#1f2937' },
   orderSub: { fontSize: 12, color: '#6b7280' },
   orderTotal: { fontSize: 14, fontWeight: '600', color: '#1f2937' },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 20, marginTop: 4 },
   statusText: { fontSize: 10, fontWeight: '500' },
   btn: { flex: 1, borderRadius: 12, paddingVertical: 14, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  btnPrimary: { backgroundColor: '#4f46e5' },
+  btnPrimary: { backgroundColor: OMS_COLORS.primary },
   btnPrimaryText: { color: '#fff', fontWeight: '600', marginLeft: 8, fontSize: 14 },
-  btnOutline: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb' },
+  btnOutline: { backgroundColor: 'rgba(255,255,255,0.9)', borderWidth: 1, borderColor: OMS_COLORS.primaryBorder },
   btnOutlineText: { color: '#374151', fontWeight: '600', marginLeft: 8, fontSize: 14 },
 });

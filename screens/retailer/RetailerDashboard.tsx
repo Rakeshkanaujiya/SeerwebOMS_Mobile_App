@@ -12,13 +12,23 @@ import RefreshWrapper from 'components/RefreshWrapper';
 import BottomTabNavigator, { screenDataCache } from 'components/BottomTabNavigator';
 import Svg, { Path, G, Text as SvgText, Circle, Line } from 'react-native-svg';
 import { Ionicons, Feather } from '@expo/vector-icons';
-import { SafeAreaView } from 'react-native-safe-area-context';
 import Navbar from 'components/Navbar';
-import { apiGet } from '../../src/lib/services/api';
+import { apiGet, cachedGet } from '../../src/lib/services/api';
+import AppScreen from '../../components/AppScreen';
+import { OMS_COLORS } from '../../src/lib/theme';
 
 const CACHE_KEY = 'RetailerDashboard';
 
 interface ApiOrder { id: number; items?: any[]; createdAt: string; status: string; total: string | number }
+
+type RetailerDashboardSummary = {
+  total: number;
+  pending: number;
+  approved: number;
+  delivered: number;
+  orderTrends: { month: string; value: number }[];
+  recent: { id: number; items: number; date: string; total: number; status: string }[];
+};
 
 // ── StatCard ──────────────────────────────────────────────────────────────────
 const StatCard = memo(({ title, value, icon, bgColor, change }: {
@@ -127,7 +137,6 @@ const Skeleton = memo(() => (
 const STATUS_COLORS: Record<string, { bg: string; text: string }> = {
   pending:   { bg: '#fef3c7', text: '#92400e' },
   approved:  { bg: '#dbeafe', text: '#1e40af' },
-  dispatched:{ bg: '#e0e7ff', text: '#3730a3' },
   delivered: { bg: '#d1fae5', text: '#065f46' },
   cancelled: { bg: '#fee2e2', text: '#991b1b' },
 };
@@ -139,19 +148,46 @@ export default function RetailerDashboard() {
   const cached = screenDataCache[CACHE_KEY];
   const [user, setUser]         = useState<any>(cached?.user ?? null);
   const [rawOrders, setRawOrders] = useState<ApiOrder[]>(cached?.rawOrders ?? []);
+  const [summary, setSummary] = useState<RetailerDashboardSummary | null>(cached?.summary ?? null);
   const [loading, setLoading]   = useState(!cached);
 
   const fetchOrders = useCallback(async (retailerId: number, silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const token = await AsyncStorage.getItem('token');
-      const data = await apiGet(`/orders?retailerId=${retailerId}`, token ?? undefined);
-      if (Array.isArray(data)) {
-        setRawOrders(data);
-        screenDataCache[CACHE_KEY] = { ...screenDataCache[CACHE_KEY], rawOrders: data };
-      }
+      const endpoint = `/orders/retailer-dashboard?retailerId=${retailerId}`;
+      const data = silent ? await cachedGet(endpoint) : await apiGet(endpoint);
+      const nextSummary: RetailerDashboardSummary = {
+        total: Number(data?.total ?? 0),
+        pending: Number(data?.pending ?? 0),
+        approved: Number(data?.approved ?? 0),
+        delivered: Number(data?.delivered ?? 0),
+        orderTrends: Array.isArray(data?.orderTrends) ? data.orderTrends : [],
+        recent: Array.isArray(data?.recent)
+          ? data.recent.map((order: any) => ({
+              id: Number(order.id ?? 0),
+              items: Number(order.items ?? order.itemCount ?? 0),
+              date: String(order.date ?? order.createdAt ?? ''),
+              total: Number(order.total ?? 0),
+              status: String(order.status ?? 'pending'),
+            }))
+          : [],
+      };
+      setSummary(nextSummary);
+      setRawOrders([]);
+      screenDataCache[CACHE_KEY] = { ...screenDataCache[CACHE_KEY], summary: nextSummary, rawOrders: [] };
     } catch (e) {
       console.error('Order fetch error:', e);
+      try {
+        const token = await AsyncStorage.getItem('token');
+        const data = await apiGet(`/orders?retailerId=${retailerId}`, token ?? undefined);
+        if (Array.isArray(data)) {
+          setSummary(null);
+          setRawOrders(data);
+          screenDataCache[CACHE_KEY] = { ...screenDataCache[CACHE_KEY], summary: null, rawOrders: data };
+        }
+      } catch (fallbackError) {
+        console.error('Order fallback fetch error:', fallbackError);
+      }
     } finally {
       setLoading(false);
     }
@@ -172,19 +208,38 @@ export default function RetailerDashboard() {
 
   // ── Single-pass derived data ───────────────────────────────────────────────
   const derived = useMemo(() => {
+    if (summary) {
+      const calc = (c: number, p: number) => p === 0 ? (c > 0 ? 100 : 0) : ((c - p) / p) * 100;
+      return {
+        total: summary.total,
+        pending: summary.pending,
+        delivered: summary.delivered,
+        approved: summary.approved,
+        totalChange: calc(summary.total, 0),
+        pendingChange: calc(summary.pending, 0),
+        deliveredChange: calc(summary.delivered, 0),
+        statusDist: [
+          { label: 'Pending', value: summary.pending, color: '#f59e0b' },
+          { label: 'Approved', value: summary.approved, color: '#3b82f6' },
+          { label: 'Delivered', value: summary.delivered, color: '#10b981' },
+        ],
+        orderTrends: summary.orderTrends,
+        recent: summary.recent,
+      };
+    }
+
     const now = new Date();
     const lmStart = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const lmEnd   = new Date(now.getFullYear(), now.getMonth(), 0);
     const months  = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-    let total = 0, pending = 0, delivered = 0, dispatched = 0, approved = 0;
-    let lm_total = 0, lm_pending = 0, lm_delivered = 0, lm_dispatch = 0;
+    let total = 0, pending = 0, delivered = 0, approved = 0;
+    let lm_total = 0, lm_pending = 0, lm_delivered = 0;
     const monthCount: Record<string, number> = {};
     for (const o of rawOrders) {
       const dt = new Date(o.createdAt), st = o.status || 'pending';
       total++;
       if (st === 'pending') pending++;
       else if (st === 'delivered') delivered++;
-      else if (st === 'dispatched') dispatched++;
       else if (st === 'approved') approved++;
       const mo = months[dt.getMonth()];
       monthCount[mo] = (monthCount[mo] ?? 0) + 1;
@@ -192,7 +247,6 @@ export default function RetailerDashboard() {
         lm_total++;
         if (st === 'pending') lm_pending++;
         if (st === 'delivered') lm_delivered++;
-        if (st === 'dispatched') lm_dispatch++;
       }
     }
     const calc = (c: number, p: number) => p === 0 ? (c > 0 ? 100 : 0) : ((c - p) / p) * 100;
@@ -201,11 +255,10 @@ export default function RetailerDashboard() {
       .slice(0, 4)
       .map(o => ({ id: o.id, items: o.items?.length ?? 0, date: o.createdAt, total: Number(o.total), status: o.status || 'pending' }));
     return {
-      total, pending, delivered, dispatched, approved,
+      total, pending, delivered, approved,
       totalChange: calc(total, lm_total),
       pendingChange: calc(pending, lm_pending),
       deliveredChange: calc(delivered, lm_delivered),
-      dispatchedChange: calc(dispatched, lm_dispatch),
       statusDist: [
         { label: 'Pending', value: pending, color: '#f59e0b' },
         { label: 'Approved', value: approved, color: '#3b82f6' },
@@ -214,7 +267,7 @@ export default function RetailerDashboard() {
       orderTrends: Object.entries(monthCount).map(([month, value]) => ({ month, value })),
       recent,
     };
-  }, [rawOrders]);
+  }, [rawOrders, summary]);
 
   const handleRefresh = useCallback(async () => {
     if (user?.id) await fetchOrders(user.id, false);
@@ -225,7 +278,7 @@ export default function RetailerDashboard() {
   }, [navigation]);
 
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+    <AppScreen>
       <Navbar user={user?.name} />
       {loading ? (
         <Skeleton />
@@ -235,10 +288,9 @@ export default function RetailerDashboard() {
 
             {/* Stats */}
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 16 }} contentContainerStyle={{ paddingRight: 16 }}>
-              <StatCard title="Total Orders" value={derived.total} icon={<Feather name="shopping-cart" size={18} color="#3b82f6" />} bgColor="#dbeafe" change={derived.totalChange} />
+              <StatCard title="Total Orders" value={derived.total} icon={<Feather name="shopping-cart" size={18} color={OMS_COLORS.primary} />} bgColor={OMS_COLORS.primarySoft} change={derived.totalChange} />
               <StatCard title="Pending" value={derived.pending} icon={<Feather name="clock" size={18} color="#f59e0b" />} bgColor="#fef3c7" change={derived.pendingChange} />
               <StatCard title="Delivered" value={derived.delivered} icon={<Feather name="check-circle" size={18} color="#10b981" />} bgColor="#d1fae5" change={derived.deliveredChange} />
-              <StatCard title="In Transit" value={derived.dispatched} icon={<Feather name="truck" size={18} color="#6366f1" />} bgColor="#e0e7ff" change={derived.dispatchedChange} />
             </ScrollView>
 
             {/* Donut */}
@@ -260,7 +312,7 @@ export default function RetailerDashboard() {
 
             {/* Line chart */}
             <View style={[styles.card, { marginBottom: 16 }]}>
-              <LineChart data={derived.orderTrends} width={320} height={200} color="#3b82f6" label="Monthly Order Trends" />
+              <LineChart data={derived.orderTrends} width={320} height={200} color={OMS_COLORS.accentDark} label="Monthly Order Trends" />
             </View>
 
             {/* Recent Orders */}
@@ -271,7 +323,7 @@ export default function RetailerDashboard() {
               </View>
               {derived.recent.map((o, i) => (
                 <View key={o.id} style={[styles.orderRow, i !== derived.recent.length - 1 && { borderBottomWidth: 1, borderBottomColor: '#f3f4f6' }]}>
-                  <View style={styles.orderIcon}><Feather name="package" size={16} color="#3b82f6" /></View>
+                  <View style={styles.orderIcon}><Feather name="package" size={16} color={OMS_COLORS.primary} /></View>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.orderName}>Order #{o.id}</Text>
                     <Text style={styles.orderSub}>{o.items} items · {new Date(o.date).toLocaleDateString('en-IN')}</Text>
@@ -289,7 +341,7 @@ export default function RetailerDashboard() {
             {/* Quick Actions */}
             <View style={[styles.card, { marginBottom: 32 }]}>
               <Text style={styles.cardTitle}>Quick Actions</Text>
-              <Pressable style={[styles.btn, { backgroundColor: '#2563eb', marginTop: 12, marginBottom: 10 }]} onPress={() => goTo('RetailerHome')}>
+              <Pressable style={[styles.btn, { backgroundColor: OMS_COLORS.primary, marginTop: 12, marginBottom: 10 }]} onPress={() => goTo('RetailerHome')}>
                 <Ionicons name="grid-outline" size={20} color="#fff" /><Text style={[styles.btnText, { color: '#fff' }]}>Browse Products</Text>
               </Pressable>
               <Pressable style={[styles.btn, styles.btnOutline, { marginBottom: 10 }]} onPress={() => goTo('RetailerOrderScreen')}>
@@ -303,15 +355,15 @@ export default function RetailerDashboard() {
         </RefreshWrapper>
       )}
       <BottomTabNavigator />
-    </SafeAreaView>
+    </AppScreen>
   );
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: '#fff', borderRadius: 16, padding: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
-  cardTitle: { fontSize: 15, fontWeight: '600', color: '#1f2937', marginBottom: 8 },
+  card: { backgroundColor: OMS_COLORS.surfaceTint, borderRadius: 18, padding: 16, shadowColor: OMS_COLORS.primaryDeep, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)' },
+  cardTitle: { fontSize: 15, fontWeight: '800', color: OMS_COLORS.primaryDeep, marginBottom: 8 },
   chartLabel: { fontSize: 14, fontWeight: '600', color: '#374151', marginBottom: 8 },
-  statCard: { backgroundColor: '#fff', borderRadius: 16, padding: 16, minWidth: 140, marginRight: 8, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.06, shadowRadius: 4, elevation: 2 },
+  statCard: { backgroundColor: OMS_COLORS.surfaceTint, borderRadius: 18, padding: 16, minWidth: 140, marginRight: 8, shadowColor: OMS_COLORS.primaryDeep, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.12, shadowRadius: 8, elevation: 3, borderWidth: 1, borderColor: 'rgba(255,255,255,0.7)' },
   statRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 },
   statTitle: { color: '#6b7280', fontSize: 12, fontWeight: '500', flex: 1 },
   statIcon: { padding: 8, borderRadius: 12 },
@@ -321,15 +373,15 @@ const styles = StyleSheet.create({
   changeText: { fontSize: 11, fontWeight: '600' },
   changeLabel: { color: '#9ca3af', fontSize: 10, marginLeft: 4 },
   sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  viewAll: { color: '#2563eb', fontSize: 12, fontWeight: '500' },
+  viewAll: { color: OMS_COLORS.accentDark, fontSize: 12, fontWeight: '700' },
   orderRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12 },
-  orderIcon: { backgroundColor: '#eff6ff', padding: 8, borderRadius: 8, marginRight: 12 },
+  orderIcon: { backgroundColor: OMS_COLORS.primarySoft, padding: 8, borderRadius: 8, marginRight: 12 },
   orderName: { fontSize: 14, fontWeight: '500', color: '#1f2937' },
   orderSub: { fontSize: 12, color: '#6b7280' },
   orderTotal: { fontSize: 14, fontWeight: '600', color: '#1f2937' },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 2, borderRadius: 20, marginTop: 4 },
   statusText: { fontSize: 10, fontWeight: '500' },
   btn: { borderRadius: 12, paddingVertical: 14, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-  btnOutline: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#e5e7eb' },
+  btnOutline: { backgroundColor: 'rgba(255,255,255,0.9)', borderWidth: 1, borderColor: OMS_COLORS.primaryBorder },
   btnText: { fontWeight: '600', marginLeft: 8, fontSize: 15 },
 });

@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="720" viewBox="0 0 640 720">
+  <rect width="640" height="720" fill="#f8fafc"/>
+  <rect x="210" y="90" width="220" height="500" rx="90" fill="#166534"/>
+  <rect x="130" y="150" width="180" height="70" rx="35" fill="#166534" transform="rotate(-28 130 150)"/>
+  <rect x="330" y="150" width="180" height="70" rx="35" fill="#166534" transform="rotate(28 510 150)"/>
+  <rect x="230" y="530" width="75" height="160" rx="30" fill="#14532d"/>
+  <rect x="335" y="530" width="75" height="160" rx="30" fill="#14532d"/>
+  <circle cx="320" cy="75" r="58" fill="#d6b08a"/>
+  <text x="320" y="350" text-anchor="middle" font-family="Arial" font-size="30" fill="#ffffff">BOTTLE GREEN</text>
+</svg>

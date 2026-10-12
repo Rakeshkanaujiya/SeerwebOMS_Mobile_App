@@ -1,14 +1,31 @@
 // screens/AuthLoadingScreen.tsx
 
 import React, { useEffect } from 'react';
-import { ActivityIndicator, View } from 'react-native';
+import { View } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../types/navigation';
 import { getHomeRouteForRole, safeJsonParse } from '../src/lib/app';
+import { refreshAuthenticatedUser } from '../src/lib/auth';
+import { clearRoleCache } from 'components/BottomTabNavigator';
+import { loadProductSettings } from '../src/lib/dealerSettings';
 
-export default function AuthLoadingScreen() {
+function getDealerIdForSettings(user: any) {
+  return String(user?.role === 'dealer' ? user?.id ?? '' : user?.dealer_id ?? '');
+}
+
+async function preloadProductSettingsForUser(user: any, token: string) {
+  const dealerId = getDealerIdForSettings(user);
+  if (!dealerId) return;
+  await loadProductSettings(dealerId, token).catch(() => undefined);
+}
+
+type AuthLoadingScreenProps = {
+  onReady?: () => void;
+};
+
+export default function AuthLoadingScreen({ onReady }: AuthLoadingScreenProps) {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   useEffect(() => {
@@ -19,6 +36,7 @@ export default function AuthLoadingScreen() {
       ]);
 
       if (!token || !userString) {
+        onReady?.();
         navigation.reset({
           index: 0,
           routes: [{ name: 'Login' }],
@@ -26,9 +44,26 @@ export default function AuthLoadingScreen() {
         return;
       }
 
-      const user = safeJsonParse<{ role?: string }>(userString, {});
+      const storedUser = safeJsonParse<{ role?: string }>(userString, {});
+      let user = storedUser;
+
+      try {
+        user = await refreshAuthenticatedUser(token, storedUser);
+        await preloadProductSettingsForUser(user, token);
+        clearRoleCache();
+      } catch {
+        await AsyncStorage.multiRemove(['token', 'user']);
+        onReady?.();
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'Login' }],
+        });
+        return;
+      }
+
       const route = getHomeRouteForRole(user.role);
 
+      onReady?.();
       navigation.reset({
         index: 0,
         routes: [{ name: route ?? 'Login' }],
@@ -36,13 +71,9 @@ export default function AuthLoadingScreen() {
     };
 
     checkAuth();
-  }, [navigation]);
+  }, [navigation, onReady]);
 
-  return (
-    <View className="flex-1 justify-center items-center bg-white">
-      <ActivityIndicator size="large" color="#5b74f1" />
-    </View>
-  );
+  return <View className="flex-1 bg-[#EEF7FB]" />;
 }
 
 

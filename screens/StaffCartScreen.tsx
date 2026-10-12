@@ -1,9 +1,13 @@
+import { useCartPricing } from '../src/lib/useCartPricing';
+import { useFocusEffect } from '@react-navigation/native';
+import { resolveCartDisplaySettings, useDealerDisplaySettings } from '../src/lib/cartSettings';
+import { useWindowDimensions } from 'react-native';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Modal,
   Pressable,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -18,6 +22,7 @@ import { apiUrl } from 'apiurl';
 import BottomTabNavigator from 'components/BottomTabNavigator';
 import CartLineItem from 'components/CartLineItem';
 import GarmentCartGroupCard from 'components/GarmentCartGroupCard';
+import KeyboardAwareScrollView from 'components/KeyboardAwareScrollView';
 import Navbar from 'components/Navbar';
 import OrderSummary from 'components/OrderSummary';
 import { useCart } from '../context/CartContext';
@@ -25,50 +30,76 @@ import type { RootStackParamList } from '../types/navigation';
 import {
   buildCartDisplayItems,
   buildCartRows,
-  mapProductPayload,
+  createCartSnapshotItem,
   type CartDisplayItem,
-  type CartProductDetail,
 } from '../src/lib/cart';
+import { buildOrderItems, getOrderTotals } from '../src/lib/order';
+import { invalidateCaches } from '../src/lib/cache';
+import { fetchDealerGstSlabs, type GstSlab } from '../src/lib/gst';
+import { OMS_COLORS } from '../src/lib/theme';
+import { getCustomerDealerId } from '../src/lib/customers';
+import { invalidatePartyProductHistory } from '../src/lib/partyProductHistory';
+import { logScreenError } from '../src/lib/logging';
 
 interface Retailer {
   id: number;
   name: string;
-  store_name: string;
+  ledger: string;
   phone: string;
   address: string;
   city: string;
 }
 
-const BLUE = '#185FA5';
+const BLUE = OMS_COLORS.primary;
 const RED = '#DC2626';
 
 export default function StaffCartScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cart, addToCart, updateCartQuantity, removeFromCart, clearCart } = useCart();
-  const [productsById, setProductsById] = useState<Record<number, CartProductDetail>>({});
+  const { cart, editingOrder, addToCart, updateCartQuantity, removeFromCart, clearCart } = useCart();
+  const [gstSlabs, setGstSlabs] = useState<GstSlab[]>([]);
+  const [gstSlabsLoading, setGstSlabsLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [user, setUser] = useState<any>(null);
+  const display = useDealerDisplaySettings(getCustomerDealerId(user), user?.business_type_id);
+  const cardSettings = resolveCartDisplaySettings(
+    display.cart,
+    display.list,
+    display.schemaFields,
+    user?.business_type_id,
+    display.fieldSettings,
+    display.sectionSettings
+  );
+  const gstDealerId = Number(getCustomerDealerId(user));
+  const pricingVisible = cardSettings.visibleDetails.price;
+  const productNameVisible = cardSettings.visibleDetails.productName;
+  const { width } = useWindowDimensions();
+  const columns = Math.max(1, Math.min(display.cart.cardsPerRow, Math.floor((width - 24) / 280)));
   const [selectedRetailer, setSelectedRetailer] = useState<Retailer | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [confirmModalVisible, setConfirmModalVisible] = useState(false);
   const [removeModalVisible, setRemoveModalVisible] = useState(false);
-  const [pendingRemove, setPendingRemove] = useState<{ productId: number; variantId: number; name: string } | null>(null);
+  const [pendingRemove, setPendingRemove] = useState<{
+    productId: number;
+    variantIds: Array<number | string>;
+    name: string;
+    color?: string;
+  } | null>(null);
   const [notes, setNotes] = useState('');
 
-  const fetchProductDetails = useCallback(async (dealerId: number) => {
+  const pricing = useCartPricing(Number(getCustomerDealerId(user)), Number(selectedRetailer?.id ?? 0));
+  const productsById = pricing.products;
+
+  const fetchGstSlabs = useCallback(async (dealerId: number) => {
+    setGstSlabsLoading(true);
     try {
-      const response = await fetch(`${apiUrl}/products?dealerid=${dealerId}`);
-      const raw = await response.json();
-      const list = (Array.isArray(raw?.products) ? raw.products : Array.isArray(raw) ? raw : []).map(mapProductPayload);
-      const nextMap: Record<number, CartProductDetail> = {};
-
-      list.forEach((product: CartProductDetail) => {
-        nextMap[product.id] = product;
-      });
-
-      setProductsById(nextMap);
+      const token = (await AsyncStorage.getItem('token')) ?? undefined;
+      const slabs = await fetchDealerGstSlabs(dealerId, token);
+      setGstSlabs(slabs);
     } catch (error) {
-      console.error('Failed to fetch product details:', error);
+      console.error('Failed to fetch GST slabs:', error);
+      setGstSlabs([]);
+    } finally {
+      setGstSlabsLoading(false);
     }
   }, []);
 
@@ -83,10 +114,15 @@ export default function StaffCartScreen() {
         if (!userData) return;
 
         const parsedUser = JSON.parse(userData);
+        const dealerId = getCustomerDealerId(parsedUser);
         setUser(parsedUser);
+        if (!dealerId) {
+          navigation.navigate('Login' as never);
+          return;
+        }
 
         if (retailerData) setSelectedRetailer(JSON.parse(retailerData));
-        await fetchProductDetails(parsedUser.dealer_id);
+
       } catch (error) {
         console.error('StaffCartScreen boot error:', error);
       } finally {
@@ -95,49 +131,65 @@ export default function StaffCartScreen() {
     };
 
     boot();
-  }, [fetchProductDetails]);
+  }, []);
 
-  const cartRows = useMemo(() => buildCartRows(cart, productsById), [cart, productsById]);
-  const cartDisplayItems = useMemo(() => buildCartDisplayItems(cartRows, productsById), [cartRows, productsById]);
-  const totalItems = useMemo(() => cart.reduce((sum, item) => sum + item.quantity, 0), [cart]);
-  const totalPrice = useMemo(() => cart.reduce((sum, item) => sum + item.price * item.quantity, 0), [cart]);
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    void AsyncStorage.getItem('selectedRetailer').then(raw => {
+      if (active) setSelectedRetailer(raw ? JSON.parse(raw) : null);
+    });
+    return () => { active = false; };
+  }, []));
 
   useEffect(() => {
-    const validProductIds = new Set(Object.keys(productsById).map(Number));
-    const staleItems = cart.filter((item) => Object.keys(productsById).length > 0 && !validProductIds.has(item.productId));
-    if (staleItems.length === 0) return;
+    if (editingOrder?.notes !== undefined) {
+      setNotes(editingOrder.notes || '');
+    }
+  }, [editingOrder]);
 
-    staleItems.forEach((item) => removeFromCart(item.productId, item.variantId));
-  }, [cart, productsById, removeFromCart]);
+  useEffect(() => {
+    if (gstDealerId) void fetchGstSlabs(gstDealerId);
+  }, [gstDealerId, fetchGstSlabs]);
+
+  const cartRows = useMemo(() => buildCartRows(cart, productsById), [cart, productsById]);
+  const cartDisplayItems = useMemo(
+    () => buildCartDisplayItems(cartRows, productsById),
+    [cartRows, productsById]
+  );
+  const totals = useMemo(
+    () => getOrderTotals(cart, user?.business_type_id, gstSlabs),
+    [cart, gstSlabs, user?.business_type_id]
+  );
+  const totalItems = totals.totalItems;
+  const totalPrice = totals.total;
+  const isCartEmpty = cartDisplayItems.length === 0;
+  const checkoutBlockedByGst = !isCartEmpty && (pricing.loading || Boolean(pricing.error) || gstSlabsLoading || totals.hasMissingGstSlab);
+  const gstHelperText = pricing.error || (pricing.loading ? 'Refreshing customer prices...' : null) || (gstSlabsLoading
+    ? 'Loading GST Master slabs...'
+    : totals.hasMissingGstSlab
+      ? 'GST Master does not have an active slab for one or more item rates.'
+      : null);
 
   const handleIncrement = useCallback(
-    (productId: number, variantId: number, currentQty: number) => {
+    (productId: number, variantId: number | string, currentQty: number, color?: string) => {
       if (currentQty <= 0) {
         const product = productsById[productId];
-        const variant = product?.variants?.find((entry) => Number(entry.id) === Number(variantId));
+        const variant = product?.variants?.find((entry) => String(entry.id) === String(variantId));
         if (!variant) return;
 
-        addToCart({
-          productId,
-          variantId,
-          size: variant.size,
-          color: variant.color,
-          price: Number(variant.rate ?? variant.mrp ?? product?.price ?? 0),
-          quantity: 1,
-          stock: Number(variant.qty ?? 0),
-        });
+        addToCart(createCartSnapshotItem(product, 1, variant, { color }));
         return;
       }
 
-      updateCartQuantity(productId, variantId, currentQty + 1);
+      updateCartQuantity(productId, variantId, currentQty + 1, color);
     },
     [addToCart, productsById, updateCartQuantity]
   );
 
   const handleDecrement = useCallback(
-    (productId: number, variantId: number, currentQty: number) => {
-      if (currentQty <= 1) removeFromCart(productId, variantId);
-      else updateCartQuantity(productId, variantId, currentQty - 1);
+    (productId: number, variantId: number | string, currentQty: number, color?: string) => {
+      if (currentQty <= 1) removeFromCart(productId, variantId, color);
+      else updateCartQuantity(productId, variantId, currentQty - 1, color);
     },
     [removeFromCart, updateCartQuantity]
   );
@@ -146,48 +198,36 @@ export default function StaffCartScreen() {
     if (!user || cart.length === 0) return;
 
     if (!selectedRetailer) return;
+    const dealerId = getCustomerDealerId(user);
+    if (!dealerId) return;
+    if (checkoutBlockedByGst) {
+      Alert.alert('GST Master', gstHelperText || 'GST Master slabs are not ready yet.');
+      return;
+    }
 
     setIsSubmitting(true);
 
     try {
       const token = await AsyncStorage.getItem('token');
-      const orderItems = cart.map((item) => {
-        const product = productsById[item.productId];
-        const variant =
-          item.variantId !== 0
-            ? product?.variants?.find((entry) => Number(entry.id) === Number(item.variantId))
-            : undefined;
-
-        return {
-          productId: item.productId,
-          ...(item.variantId !== 0 ? { variantId: item.variantId } : {}),
-          size: item.size ?? variant?.size,
-          color: item.color ?? variant?.color,
-          quantity: item.quantity,
-          price: item.price,
-          subtotal: item.price * item.quantity,
-          rack: '',
-          attributes_snapshot: {
-            brand: product?.brand || '',
-            model: product?.model || '',
-            business_type_id: product?.business_type_id ?? null,
-          },
-        };
-      });
+      const orderItems = buildOrderItems(cart, productsById, totals.taxLines);
 
       const orderPayload = {
         retailerId: selectedRetailer.id,
-        retailerName: selectedRetailer.store_name,
-        dealerId: user.dealer_id,
-        total: totalPrice,
+        retailerName: selectedRetailer.name,
+        dealerId,
+        total: totals.total,
+        taxableValue: totals.taxableValue,
+        gstPercentage: totals.gstPercentage,
+        gstAmount: totals.gst,
         notes,
         order_by: user.role,
         order_by_id: user.id,
         items: orderItems,
       };
 
-      const response = await fetch(`${apiUrl}/orders`, {
-        method: 'POST',
+      const isEditing = Boolean(editingOrder?.orderId);
+      const response = await fetch(isEditing ? `${apiUrl}/orders/${editingOrder?.orderId}` : `${apiUrl}/orders`, {
+        method: isEditing ? 'PUT' : 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
@@ -198,15 +238,33 @@ export default function StaffCartScreen() {
       if (!response.ok) {
         const body = await response.text();
         console.error('Order failed:', response.status, body);
-        throw new Error('Failed to submit order');
+        let message = isEditing ? 'Failed to update order' : 'Failed to submit order';
+        try {
+          const payload = body ? JSON.parse(body) : {};
+          message = payload?.messages?.error || payload?.message || payload?.error || message;
+        } catch {
+          if (body.trim()) message = body.trim();
+        }
+        throw new Error(message);
       }
 
+      await invalidatePartyProductHistory(dealerId, selectedRetailer.id);
+      invalidateCaches('/orders');
       clearCart();
+      await AsyncStorage.removeItem('selectedRetailer');
+      setSelectedRetailer(null);
       setConfirmModalVisible(false);
       setNotes('');
       navigation.replace('StaffOrderScreen');
     } catch (error) {
-      console.error('Order submission error:', error);
+      logScreenError('StaffCartScreen.submitOrder', error, {
+        dealerId,
+        retailerId: selectedRetailer.id,
+      });
+      Alert.alert(
+        editingOrder ? 'Order update failed' : 'Order failed',
+        error instanceof Error ? error.message : 'Unable to save the order. Please try again.'
+      );
     } finally {
       setIsSubmitting(false);
     }
@@ -216,7 +274,10 @@ export default function StaffCartScreen() {
     <SafeAreaView style={styles.safeArea} edges={['top']}>
       <Navbar user={user?.name} />
 
-      <ScrollView style={styles.scrollView} contentContainerStyle={styles.scrollContent}>
+      <KeyboardAwareScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        extraScrollHeight={36}>
         <Text style={styles.pageTitle}>Your Cart</Text>
         <Text style={styles.pageSubtitle}>Review the customer order before submitting it.</Text>
 
@@ -226,7 +287,7 @@ export default function StaffCartScreen() {
               <Feather name="user" size={15} color={BLUE} />
             </View>
             <Text style={styles.retailerName} numberOfLines={1}>
-              {selectedRetailer.store_name}
+              {selectedRetailer.ledger}
             </Text>
             <View style={styles.retailerBadge}>
               <Text style={styles.retailerBadgeText}>Customer</Text>
@@ -234,101 +295,159 @@ export default function StaffCartScreen() {
           </View>
         ) : (
           <View style={styles.warningBanner}>
-            <Feather name="alert-triangle" size={16} color="#B45309" />
+            <Feather name="info" size={16} color={OMS_COLORS.primary} />
             <Text style={styles.warningText}>Select a customer before submitting the order.</Text>
           </View>
         )}
 
         {loading ? (
           <ActivityIndicator size="large" color={BLUE} style={styles.loader} />
-        ) : cartDisplayItems.length === 0 ? (
+        ) : isCartEmpty ? (
           <View style={styles.emptyState}>
             <View style={styles.emptyIcon}>
               <Feather name="shopping-cart" size={36} color="#D1D5DB" />
             </View>
             <Text style={styles.emptyTitle}>Cart is empty</Text>
-            <Text style={styles.emptySubtitle}>Go to the customer products tab and add items to continue.</Text>
+            <Text style={styles.emptySubtitle}>
+              Go to the customer products tab and add items to continue.
+            </Text>
           </View>
         ) : (
           <>
             <View style={styles.countStrip}>
-              <Text style={styles.countText}>{totalItems} item{totalItems !== 1 ? 's' : ''} in cart</Text>
-              <Text style={styles.countPrice}>₹{totalPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</Text>
+              <Text style={styles.countText}>
+                {totalItems} item{totalItems !== 1 ? 's' : ''} in cart
+              </Text>
+              {pricingVisible ? <Text style={styles.countPrice}>
+                ₹{totalPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              </Text> : null}
             </View>
 
-            {cartDisplayItems.map((item: CartDisplayItem) =>
-              item.kind === 'garment-group' ? (
-                <GarmentCartGroupCard
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap' }}>
+            {cartDisplayItems.map((item: CartDisplayItem) => <View key={item.key} style={{ width: `${100 / columns}%`, paddingHorizontal: 4 }}>
+              {item.kind === 'garment-group' ? (
+                <GarmentCartGroupCard settings={cardSettings}
                   key={item.key}
                   group={item}
-                  onDecrementSize={(variantId, currentQty) => handleDecrement(item.productId, variantId, currentQty)}
-                  onIncrementSize={(variantId, currentQty) => handleIncrement(item.productId, variantId, currentQty)}
+                  onDecrementSize={(variantId, currentQty) =>
+                    handleDecrement(
+                      item.productId,
+                      variantId,
+                      currentQty,
+                      item.colorLabel ?? undefined
+                    )
+                  }
+                  onIncrementSize={(variantId, currentQty) =>
+                    handleIncrement(
+                      item.productId,
+                      variantId,
+                      currentQty,
+                      item.colorLabel ?? undefined
+                    )
+                  }
                   onRemoveSize={(variantId) => {
                     const sizeItem = item.sizes.find((entry) => entry.variantId === variantId);
                     setPendingRemove({
                       productId: item.productId,
-                      variantId,
+                      variantIds: [variantId],
                       name: `${item.name}${sizeItem ? ` (${sizeItem.sizeLabel})` : ''}`,
+                      color: item.colorLabel ?? undefined,
+                    });
+                    setRemoveModalVisible(true);
+                  }}
+                  onRemoveProduct={() => {
+                    setPendingRemove({
+                      productId: item.productId,
+                      variantIds: item.sizes.map((size) => size.variantId),
+                      name: item.name,
+                      color: item.colorLabel ?? undefined,
                     });
                     setRemoveModalVisible(true);
                   }}
                 />
               ) : (
-                <CartLineItem
+                <CartLineItem settings={cardSettings}
+                  onQuantityChange={quantity => updateCartQuantity(item.productId, item.variantId, quantity, item.colorLabel ?? undefined)}
                   key={item.key}
                   row={item}
-                  onDecrement={() => handleDecrement(item.productId, item.variantId, item.quantity)}
-                  onIncrement={() => handleIncrement(item.productId, item.variantId, item.quantity)}
+                  onDecrement={() =>
+                    handleDecrement(
+                      item.productId,
+                      item.variantId,
+                      item.quantity,
+                      item.colorLabel ?? undefined
+                    )
+                  }
+                  onIncrement={() =>
+                    handleIncrement(
+                      item.productId,
+                      item.variantId,
+                      item.quantity,
+                      item.colorLabel ?? undefined
+                    )
+                  }
                   onRemove={() => {
                     setPendingRemove({
                       productId: item.productId,
-                      variantId: item.variantId,
+                      variantIds: [item.variantId],
                       name: item.name,
+                      color: item.colorLabel ?? undefined,
                     });
                     setRemoveModalVisible(true);
                   }}
                 />
-              )
-            )}
+              )}
+            </View>)}
+            </View>
 
             <OrderSummary
               totalItems={totalItems}
               totalPrice={totalPrice}
-              customerName={selectedRetailer?.store_name || selectedRetailer?.name}
+              subtotal={totals.subtotal}
+              gst={totals.gst}
+              totalSets={totals.totalSets}
+              productCount={totals.productCount}
+              showPricing={pricingVisible}
+              customerName={selectedRetailer?.ledger || selectedRetailer?.name}
               checkoutLabel={selectedRetailer ? 'Checkout' : 'Select Customer First'}
-              disabled={!selectedRetailer}
-              helperText={!selectedRetailer ? 'Select a customer to proceed' : null}
-              onCheckout={() => setConfirmModalVisible(true)}
+              disabled={!selectedRetailer || checkoutBlockedByGst}
+              helperText={!selectedRetailer ? 'Select a customer to proceed' : gstHelperText}
+              onCheckout={() => {
+                if (checkoutBlockedByGst) {
+                  Alert.alert('GST Master', gstHelperText || 'GST Master slabs are not ready yet.');
+                  return;
+                }
+                setConfirmModalVisible(true);
+              }}
             />
           </>
         )}
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       <Modal visible={confirmModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAwareScrollView contentContainerStyle={styles.modalOverlay} extraScrollHeight={36}>
           <View style={styles.modalCard}>
             <View style={styles.modalIcon}>
               <Feather name="shopping-bag" size={24} color={BLUE} />
             </View>
             <Text style={styles.modalTitle}>Confirm Order</Text>
             <Text style={styles.modalSubtitle}>
-              {totalItems} item{totalItems !== 1 ? 's' : ''} · ₹
-              {totalPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+              {totalItems} item{totalItems !== 1 ? 's' : ''}{pricingVisible ? ` · ₹${totalPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}` : ''}
             </Text>
             {selectedRetailer ? (
-              <Text style={styles.modalRetailer}>For: {selectedRetailer.store_name}</Text>
+              <Text style={styles.modalRetailer}>For: {selectedRetailer.ledger}</Text>
             ) : null}
 
             <View style={styles.modalList}>
               {cartDisplayItems.map((item) => (
                 <View key={item.key} style={styles.modalListRow}>
                   <Text style={styles.modalListLabel} numberOfLines={1}>
-                    {item.name}
+                    {productNameVisible ? item.name : 'Product'}
                     {'quantity' in item ? ` ×${item.quantity}` : ` ×${item.totalQuantity}`}
                   </Text>
-                  <Text style={styles.modalListValue}>
+                  {pricingVisible ? <Text style={styles.modalListValue}>
                     ₹{item.subtotal.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
-                  </Text>
+                  </Text> : null}
                 </View>
               ))}
             </View>
@@ -346,45 +465,57 @@ export default function StaffCartScreen() {
               <Pressable onPress={() => setConfirmModalVisible(false)} style={styles.secondaryBtn}>
                 <Text style={styles.secondaryBtnText}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={handleSubmitOrder} disabled={isSubmitting} style={styles.primaryBtn}>
-                <Text style={styles.primaryBtnText}>{isSubmitting ? 'Submitting...' : 'Submit Order'}</Text>
+              <Pressable
+                onPress={handleSubmitOrder}
+                disabled={isSubmitting || checkoutBlockedByGst}
+                style={[
+                  styles.primaryBtn,
+                  (isSubmitting || checkoutBlockedByGst) && styles.primaryBtnDisabled,
+                ]}>
+                <Text style={styles.primaryBtnText}>
+                  {isSubmitting ? 'Submitting...' : editingOrder ? 'Update Order' : 'Submit Order'}
+                </Text>
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAwareScrollView>
       </Modal>
 
       <Modal visible={removeModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAwareScrollView contentContainerStyle={styles.modalOverlay} extraScrollHeight={36}>
           <View style={styles.modalCard}>
             <View style={[styles.modalIcon, styles.modalIconRed]}>
               <Feather name="trash-2" size={24} color={RED} />
             </View>
             <Text style={styles.modalTitle}>Remove Item?</Text>
-            <Text style={styles.modalSubtitle}>{pendingRemove?.name}</Text>
+            <Text style={styles.modalSubtitle}>{productNameVisible ? pendingRemove?.name : 'Selected item'}</Text>
             <View style={styles.modalActions}>
               <Pressable
                 onPress={() => {
                   setRemoveModalVisible(false);
                   setPendingRemove(null);
                 }}
-                style={styles.secondaryBtn}
-              >
+                style={styles.secondaryBtn}>
                 <Text style={styles.secondaryBtnText}>Cancel</Text>
               </Pressable>
               <Pressable
                 onPress={() => {
-                  if (pendingRemove) removeFromCart(pendingRemove.productId, pendingRemove.variantId);
+                  pendingRemove?.variantIds.forEach((variantId) =>
+                    removeFromCart(
+                      pendingRemove.productId,
+                      variantId,
+                      pendingRemove.color
+                    )
+                  );
                   setRemoveModalVisible(false);
                   setPendingRemove(null);
                 }}
-                style={[styles.primaryBtn, styles.removeBtn]}
-              >
+                style={[styles.primaryBtn, styles.removeBtn]}>
                 <Text style={styles.primaryBtnText}>Remove</Text>
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAwareScrollView>
       </Modal>
 
       <BottomTabNavigator />
@@ -395,10 +526,11 @@ export default function StaffCartScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: 'transparent',
   },
   scrollView: {
     flex: 1,
+    backgroundColor: 'transparent',
   },
   scrollContent: {
     paddingHorizontal: 16,
@@ -407,22 +539,22 @@ const styles = StyleSheet.create({
   },
   pageTitle: {
     fontSize: 22,
-    fontWeight: '700',
-    color: '#111827',
+    fontWeight: '800',
+    color: '#FFFFFF',
   },
   pageSubtitle: {
     marginTop: 4,
     marginBottom: 14,
     fontSize: 13,
-    color: '#6B7280',
+    color: 'rgba(255,255,255,0.82)',
   },
   retailerBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EFF6FF',
-    borderRadius: 12,
+    backgroundColor: OMS_COLORS.surfaceTint,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#BFDBFE',
+    borderColor: OMS_COLORS.primaryBorder,
     padding: 10,
     gap: 8,
     marginBottom: 14,
@@ -431,7 +563,7 @@ const styles = StyleSheet.create({
     width: 28,
     height: 28,
     borderRadius: 14,
-    backgroundColor: '#DBEAFE',
+    backgroundColor: OMS_COLORS.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -439,7 +571,7 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 14,
     fontWeight: '700',
-    color: '#1D4ED8',
+    color: OMS_COLORS.primaryDeep,
   },
   retailerBadge: {
     paddingHorizontal: 8,
@@ -455,10 +587,10 @@ const styles = StyleSheet.create({
   warningBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFBEB',
+    backgroundColor: OMS_COLORS.primarySoft,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#FCD34D',
+    borderColor: OMS_COLORS.primaryBorder,
     padding: 10,
     marginBottom: 14,
   },
@@ -466,7 +598,7 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 8,
     fontSize: 13,
-    color: '#92400E',
+    color: OMS_COLORS.primaryDeep,
   },
   loader: {
     marginTop: 60,
@@ -625,6 +757,9 @@ const styles = StyleSheet.create({
     backgroundColor: BLUE,
     paddingVertical: 12,
     alignItems: 'center',
+  },
+  primaryBtnDisabled: {
+    backgroundColor: '#9CA3AF',
   },
   removeBtn: {
     backgroundColor: RED,

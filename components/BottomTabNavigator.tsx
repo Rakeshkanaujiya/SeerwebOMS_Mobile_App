@@ -22,9 +22,9 @@
  *   On remount it reads from cache instantly and renders immediately,
  *   then optionally refreshes in the background.
  */
-import React, { useEffect, useState, useCallback, memo } from 'react';
+import React, { useEffect, useState, useCallback, memo, useRef } from 'react';
 import { View, Text, Pressable, Platform } from 'react-native';
-import { useNavigation, useRoute, CommonActions } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../types/navigation';
@@ -33,9 +33,12 @@ import { useTheme } from '../context/ThemeContext';
 import { useCart } from '../context/CartContext';
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from 'react-native-reanimated';
 import { safeJsonParse } from '../src/lib/app';
+import { hasCreateProductPermission, hasCreateRetailerPermission } from '../src/lib/permissions';
 
 // ── Module-level caches (persist across screen remounts) ──────────────────────
 let _cachedRole: string | null = null;
+let _cachedCanCreateRetailers = false;
+let _cachedCanCreateProducts = false;
 
 /**
  * screenDataCache — import this in any screen to avoid re-fetching on tab switch.
@@ -54,6 +57,9 @@ export const screenDataCache: Record<string, any> = {};
 
 export function clearRoleCache() {
   _cachedRole = null;
+  _cachedCanCreateRetailers = false;
+  _cachedCanCreateProducts = false;
+  clearScreenCache();
 }
 
 export function clearScreenCache(screen?: string) {
@@ -62,9 +68,11 @@ export function clearScreenCache(screen?: string) {
 }
 
 // ── Types ──────────────────────────────────────────────────────────────────────
+type TabRoute = 'RetailerDashboard' | 'RetailerHome' | 'Cart' | 'RetailerOrderScreen'
+  | 'StaffDashboard' | 'StaffScreen' | 'StaffCartScreen' | 'StaffOrderScreen' | 'MoreScreen';
 interface TabItem {
   name: string;
-  route: keyof RootStackParamList;
+  route: TabRoute;
   icon: (active: boolean, ac: string, ic: string) => React.ReactNode;
   badge?: number;
 }
@@ -77,15 +85,29 @@ function BottomTabNavigator() {
   const { colors } = useTheme();
   const { cartCount } = useCart();
   const [role, setRole] = useState<string | null>(_cachedRole);
+  const [, setCanCreateRetailers] = useState(_cachedCanCreateRetailers);
+  const [, setCanCreateProducts] = useState(_cachedCanCreateProducts);
+  const isSwitchingRef = useRef(false);
 
   // Read role only once per session
   useEffect(() => {
     if (_cachedRole) return;
     AsyncStorage.getItem('user').then((s) => {
       if (s) {
-        const r = safeJsonParse<{ role?: string }>(s, {})?.role ?? null;
-        _cachedRole = r;
-        setRole(r);
+        const user = safeJsonParse<{
+          role?: string;
+          can_create_retailers?: unknown;
+          can_create_products?: unknown;
+        }>(s, {});
+        const nextRole = user?.role ?? null;
+        const nextCanCreateRetailers = hasCreateRetailerPermission(user?.can_create_retailers);
+        const nextCanCreateProducts = hasCreateProductPermission(user?.can_create_products);
+        _cachedRole = nextRole;
+        _cachedCanCreateRetailers = nextCanCreateRetailers;
+        _cachedCanCreateProducts = nextCanCreateProducts;
+        setRole(nextRole);
+        setCanCreateRetailers(nextCanCreateRetailers);
+        setCanCreateProducts(nextCanCreateProducts);
       }
     });
   }, []);
@@ -123,11 +145,13 @@ function BottomTabNavigator() {
       route: 'StaffDashboard',
       icon: (a, ac, ic) => <MaterialIcons name="dashboard" size={24} color={a ? ac : ic} />,
     },
-    {
-      name: 'Customers',
-      route: 'StaffScreen',
-      icon: (a, ac, ic) => <Feather name="users" size={24} color={a ? ac : ic} />,
-    },
+            {
+              name: 'Customers',
+              route: 'StaffScreen' as const,
+              icon: (a: boolean, ac: string, ic: string) => (
+                <Feather name="users" size={24} color={a ? ac : ic} />
+              ),
+            },
     {
       name: 'Cart',
       route: 'StaffCartScreen',
@@ -139,25 +163,33 @@ function BottomTabNavigator() {
       route: 'StaffOrderScreen',
       icon: (a, ac, ic) => <Feather name="package" size={24} color={a ? ac : ic} />,
     },
+    {
+      name: 'More',
+      route: 'MoreScreen',
+      icon: (a, ac, ic) => <Feather name="more-horizontal" size={24} color={a ? ac : ic} />,
+    },
   ];
 
-  const tabs = role === 'retailer' ? retailerTabs : role === 'staff' ? staffTabs : [];
+  // const dealerTabs = staffTabs.filter((tab) => tab.route !== 'StaffDashboard');
+  const tabs = role === 'retailer' ? retailerTabs : role === 'staff' ? staffTabs : role === 'dealer' ? staffTabs : [];
 
-  // ✅ THE FIX: reset() clears the stack to one screen — zero overlap possible
+  // Replace the current tab route so tab navigation stays a single-screen stack
+  // while Native Stack performs a short fade between tab contents.
   const handleTabPress = useCallback(
-    (tabRoute: keyof RootStackParamList) => {
+    (tabRoute: TabRoute) => {
       if (currentRoute === tabRoute) return; // already here, do nothing
-      navigation.dispatch(
-        CommonActions.reset({
-          index: 0,
-          routes: [{ name: tabRoute }],
-        })
-      );
+      if (isSwitchingRef.current) return;
+      isSwitchingRef.current = true;
+
+      navigation.replace(tabRoute);
+      requestAnimationFrame(() => {
+        isSwitchingRef.current = false;
+      });
     },
     [navigation, currentRoute]
   );
 
-  if (!role || (role !== 'retailer' && role !== 'staff')) return null;
+  if (!role || (role !== 'retailer' && role !== 'staff' && role !== 'dealer')) return null;
 
   return (
     <View
@@ -180,7 +212,8 @@ function BottomTabNavigator() {
     >
       <View style={{ flexDirection: 'row', justifyContent: 'space-around', alignItems: 'center' }}>
         {tabs.map((tab) => {
-          const isActive = currentRoute === tab.route;
+          const isMoreChild = tab.route === 'MoreScreen' && currentRoute === 'ShareItems';
+          const isActive = currentRoute === tab.route || isMoreChild;
           return (
             <TabButton
               key={tab.route}

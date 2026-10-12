@@ -24,6 +24,10 @@ export function getCache(key: string): any | null {
     CACHE.delete(key);
     return null;
   }
+  // Refresh insertion order so capacity eviction drops the least recently used
+  // entry rather than the oldest value that happened to be loaded.
+  CACHE.delete(key);
+  CACHE.set(key, entry);
   return entry.data;
 }
 

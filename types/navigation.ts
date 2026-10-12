@@ -1,4 +1,5 @@
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
+import type { Product } from '../components/ProductCart';
 
 export type RootStackParamList = {
   NavbarScreen: undefined;
@@ -15,12 +16,37 @@ export type RootStackParamList = {
   RetailerHome: undefined;
   Cart: undefined;
   RetailerOrderScreen: undefined;
+  ProductDetails: {
+    productId: number;
+    product?: Product;
+    businessTypeId?: number | null;
+  };
 
   // Staff
   StaffDashboard: undefined;
-  StaffScreen: undefined;
+  StaffScreen:
+    | {
+        refreshCustomersAt?: number;
+        refreshProductsAt?: number;
+        createdCustomerId?: number | string;
+        activeTab?: 'customers' | 'products';
+      }
+    | undefined;
   StaffOrderScreen: undefined;
   StaffCartScreen: undefined;
+  MoreScreen: undefined;
+  ShareItems: undefined;
+  CreateCustomer:
+    | {
+        returnTo?: 'StaffScreen';
+      }
+    | undefined;
+  CreateItemMaster:
+    | {
+        product?: Product;
+        returnTo?: 'StaffScreen';
+      }
+    | undefined;
 
   // Static
   About: undefined;
@@ -60,3 +86,18 @@ export type StaffOrderScreenProps =
 
 export type StaffCartScreenProps =
   NativeStackScreenProps<RootStackParamList, 'StaffCartScreen'>;
+
+export type MoreScreenProps =
+  NativeStackScreenProps<RootStackParamList, 'MoreScreen'>;
+
+export type ShareItemsScreenProps =
+  NativeStackScreenProps<RootStackParamList, 'ShareItems'>;
+
+export type ProductDetailsScreenProps =
+  NativeStackScreenProps<RootStackParamList, 'ProductDetails'>;
+
+export type CreateCustomerScreenProps =
+  NativeStackScreenProps<RootStackParamList, 'CreateCustomer'>;
+
+export type CreateItemMasterScreenProps =
+  NativeStackScreenProps<RootStackParamList, 'CreateItemMaster'>;

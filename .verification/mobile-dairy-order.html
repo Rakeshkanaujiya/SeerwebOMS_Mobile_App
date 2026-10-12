@@ -1,0 +1,68 @@
+
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>Dairy Order 542</title>
+          <style>
+            @page { size: A4 portrait; margin: 9mm; }
+            * { box-sizing: border-box; }
+            body { margin: 0; color: #18342d; font-family: Arial, sans-serif; }
+            .sheet { border: 1px solid #b8d6cd; border-radius: 12px; overflow: hidden; }
+            .hero { display: flex; justify-content: space-between; align-items: center; padding: 18px 20px; color: #fff; background: linear-gradient(135deg, #087f5b, #0f766e); }
+            h1 { margin: 0; font-size: 25px; }
+            .hero p { margin: 5px 0 0; font-size: 12px; }
+            .order-no { padding: 8px 12px; border: 1px solid #ffffff73; border-radius: 8px; text-align: right; font-size: 12px; }
+            .details { display: grid; grid-template-columns: 1.4fr 1fr 1fr; border-bottom: 1px solid #b8d6cd; }
+            .detail { min-height: 95px; padding: 12px 14px; border-right: 1px solid #dcebe6; }
+            .detail:last-child { border: 0; }
+            .label { margin-bottom: 7px; color: #0f766e; font-size: 10px; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; }
+            .value { font-size: 13px; line-height: 1.55; }
+            .note { margin: 12px 14px; padding: 9px 11px; border-radius: 7px; background: #f0fdfa; color: #475569; font-size: 12px; }
+            .table-wrap { padding: 0 14px; }
+            table { width: 100%; border-collapse: collapse; }
+            thead { display: table-header-group; }
+            tr { page-break-inside: avoid; }
+            th { padding: 9px 5px; color: #0f5f50; background: #e7f6f1; border: 1px solid #cce4dc; font-size: 9px; text-transform: uppercase; }
+            td { padding: 9px 5px; border: 1px solid #dcebe6; font-size: 10px; text-align: center; vertical-align: top; }
+            .left { text-align: left; }
+            .money { white-space: nowrap; text-align: right; }
+            small { display: block; margin-top: 3px; color: #64748b; }
+            .total-row td { background: #f0fdfa; font-weight: 700; }
+            .footer { display: grid; grid-template-columns: 1.3fr 1fr; margin: 14px; border: 1px solid #b8d6cd; border-radius: 9px; overflow: hidden; }
+            .terms { padding: 13px; color: #64748b; font-size: 10px; line-height: 1.55; }
+            .totals { padding: 13px; background: #f0fdfa; border-left: 1px solid #b8d6cd; }
+            .line { display: flex; justify-content: space-between; margin-bottom: 8px; font-size: 12px; }
+            .grand { margin-top: 10px; padding-top: 10px; border-top: 2px solid #0f766e; color: #0f5f50; font-size: 16px; font-weight: 700; }
+          </style>
+        </head>
+        <body>
+          <div class="sheet">
+            <div class="hero"><div><h1>SALES ORDER</h1><p>Dairy &amp; FMCG product invoice</p></div><div class="order-no"><strong>Order #542</strong><br>25/9/2026</div></div>
+            <div class="details">
+              <div class="detail"><div class="label">Ledger / Customer</div><div class="value"><strong>Ram Creation Stores</strong><br>9876543210<br>Mumbai</div></div>
+              <div class="detail"><div class="label">Supplier / Order By</div><div class="value"><strong>Seerweb Dairy</strong><br>9988776655</div></div>
+              <div class="detail"><div class="label">Order Date</div><div class="value"><strong>25/9/2026</strong><br>11:23:00 am</div></div>
+            </div>
+            <div class="note"><strong>Notes:</strong> Deliver before noon</div>
+            <div class="table-wrap"><table><thead><tr><th>Sr</th><th>Product</th><th>Brand</th><th>Pack Size / Unit</th><th>Qty</th><th>Rate</th><th>MRP</th><th>GST %</th><th>GST</th><th>Amount</th></tr></thead><tbody>
+              
+          <tr>
+            <td>1</td>
+            <td class="left"><strong>Fresh Milk</strong></td>
+            <td>Seer Milk</td>
+            <td><strong>500 ml</strong><small>Pouch</small></td>
+            <td>2</td>
+            <td class="money">Rs.12.50</td>
+            <td class="money">Rs.15.00</td>
+            <td>5.00%</td>
+            <td class="money">Rs.1.25</td>
+            <td class="money"><strong>Rs.25.00</strong></td>
+          </tr>
+              <tr class="total-row"><td colspan="4" class="left">Total</td><td>2</td><td></td><td></td><td></td><td class="money">Rs.1.25</td><td class="money">Rs.25.00</td></tr>
+            </tbody></table></div>
+            <div class="footer"><div class="terms"><strong>Dispatch note</strong><br>Verify product, brand, pack size, quantity, MRP and batch condition at delivery. Refrigerated products must remain within their prescribed cold chain.</div><div class="totals"><div class="line"><span>Total Quantity</span><strong>2</strong></div><div class="line"><span>Taxable Amount</span><strong>Rs.25.00</strong></div><div class="line"><span>GST</span><strong>Rs.1.25</strong></div><div class="line grand"><span>Grand Total</span><span>Rs.26.25</span></div></div></div>
+          </div>
+        </body>
+      </html>
+    

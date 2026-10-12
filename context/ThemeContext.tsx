@@ -26,15 +26,15 @@ interface ThemeContextType {
 }
 
 const lightColors: ThemeColors = {
-  background: '#f9fafb',
-  surface: '#ffffff',
-  card: '#ffffff',
+  background: '#eef7fb',
+  surface: 'rgba(255,255,255,0.92)',
+  card: 'rgba(255,255,255,0.94)',
   text: '#111827',
   textSecondary: '#6b7280',
-  border: '#e5e7eb',
-  primary: '#3b82f6',
-  primaryLight: '#dbeafe',
-  success: '#10b981',
+  border: '#d9d1ef',
+  primary: '#62518f',
+  primaryLight: '#e8f9fe',
+  success: '#14b8a6',
   warning: '#f59e0b',
   error: '#ef4444',
   inputBg: '#ffffff',

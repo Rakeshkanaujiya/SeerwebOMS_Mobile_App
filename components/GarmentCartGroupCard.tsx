@@ -1,76 +1,91 @@
+import { CartSettings, DEFAULT_CART_SETTINGS } from '../src/lib/cartSettings';
 import React from 'react';
 import { Feather } from '@expo/vector-icons';
 import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { formatCurrency } from '../src/lib/app';
 import type { GarmentCartGroup } from '../src/lib/cart';
+import { cachedImageSource } from '../src/lib/images';
+import { OMS_COLORS } from '../src/lib/theme';
 
 interface GarmentCartGroupCardProps {
+  settings?: CartSettings;
   group: GarmentCartGroup;
-  onIncrementSize: (variantId: number, currentQty: number) => void;
-  onDecrementSize: (variantId: number, currentQty: number) => void;
-  onRemoveSize: (variantId: number) => void;
+  onIncrementSize: (variantId: number | string, currentQty: number) => void;
+  onDecrementSize: (variantId: number | string, currentQty: number) => void;
+  onRemoveSize: (variantId: number | string) => void;
+  onRemoveProduct: () => void;
   onImagePress?: (imageUri: string) => void;
 }
 
-const BLUE = '#0F172A';
-const BLUE_ACCENT = '#1D4ED8';
-const GOLD = '#F59E0B';
-const BORDER = '#E5E7EB';
+const BLUE = OMS_COLORS.text;
+const BLUE_ACCENT = OMS_COLORS.primary;
+const BORDER = OMS_COLORS.border;
 
 export default function GarmentCartGroupCard({
   group,
   onIncrementSize,
   onDecrementSize,
   onRemoveSize,
+  onRemoveProduct,
   onImagePress,
+  settings = DEFAULT_CART_SETTINGS,
 }: GarmentCartGroupCardProps) {
+  const visible = settings.visibleDetails;
+  const hidden = { display: 'none' as const };
   return (
     <View style={styles.card}>
-      <View style={styles.imageShell}>
-        {group.imageUri ? (
-          <Pressable disabled={!onImagePress} onPress={() => onImagePress?.(group.imageUri!)}>
-            <Image source={{ uri: group.imageUri }} style={styles.image} resizeMode="cover" />
-          </Pressable>
-        ) : (
-          <View style={styles.placeholder}>
-            <Feather name="image" size={20} color="#94A3B8" />
-          </View>
-        )}
-      </View>
+      {visible.image ? (
+        <View style={styles.imageShell}>
+          {group.imageUri ? (
+            <Pressable
+              disabled={!onImagePress}
+              onPress={() => onImagePress?.(group.imageUri!)}
+              style={styles.imagePressable}>
+              <Image source={cachedImageSource(group.imageUri)} style={styles.image} resizeMode="contain" />
+            </Pressable>
+          ) : (
+            <View style={styles.placeholder}>
+              <Feather name="image" size={20} color="#94A3B8" />
+            </View>
+          )}
+        </View>
+      ) : null}
 
       <View style={styles.content}>
         <View style={styles.titleRow}>
           <View style={styles.titleBlock}>
-            <Text style={styles.name} numberOfLines={2}>
+            <Text style={[styles.name, !visible.productName && hidden]} numberOfLines={2}>
               {group.name}
             </Text>
-            {(group.brand || group.model) && (
-              <Text style={styles.meta}>{[group.brand, group.model].filter(Boolean).join(' • ')}</Text>
+            {((visible.brand && group.brand) || (visible.model && group.model)) && (
+              <Text style={styles.meta}>
+                {[visible.brand ? group.brand : '', visible.model ? group.model : ''].filter(Boolean).join(' • ')}
+              </Text>
             )}
           </View>
-          <Text style={styles.totalPrice}>{formatCurrency(group.subtotal)}</Text>
+          <Text style={[styles.totalPrice, !visible.price && hidden]}>{formatCurrency(group.subtotal)}</Text>
         </View>
 
-        <View style={styles.badges}>
-          <View style={styles.categoryBadge}>
+        {visible.category || (visible.variant && group.colorLabel) ? <View style={styles.badges}>
+          {visible.category ? <View style={styles.categoryBadge}>
             <Text style={styles.categoryText}>{group.categoryLabel}</Text>
-          </View>
-          {group.colorLabel ? (
+          </View> : null}
+          {visible.variant && group.colorLabel ? (
             <View style={styles.colorBadge}>
               <Text style={styles.colorText}>{group.colorLabel}</Text>
             </View>
           ) : null}
-        </View>
+        </View> : null}
 
-        <View style={styles.setBox}>
+        <View style={[styles.setBox, !visible.setCount && hidden]}>
           <Text style={styles.setTitle}>Set Ordering</Text>
           <Text style={styles.setSubtitle}>{group.sizeSummary}</Text>
         </View>
 
         <View style={styles.gridHeader}>
           <Text style={[styles.headerCell, styles.headerSize]}>Size</Text>
-          <Text style={[styles.headerCell, styles.headerQty]}>Qty</Text>
-          <Text style={[styles.headerCell, styles.headerPrice]}>Amount</Text>
+          <Text style={[styles.headerCell, styles.headerQty, !visible.quantity && hidden]}>Qty</Text>
+          <Text style={[styles.headerCell, styles.headerPrice, !visible.price && hidden]}>Amount</Text>
           <View style={styles.headerActions} />
         </View>
 
@@ -83,32 +98,29 @@ export default function GarmentCartGroupCard({
                 <Text style={styles.sizeChipText}>{size.sizeLabel}</Text>
               </View>
 
-              <View style={styles.stepper}>
+              <View style={[styles.stepper, !visible.quantity && hidden]}>
                 <Pressable
                   onPress={() => onDecrementSize(size.variantId, size.quantity)}
                   disabled={!canDecrement}
-                  style={[styles.stepBtn, !canDecrement && styles.stepBtnDisabled]}
-                >
+                  style={[styles.stepBtn, !canDecrement && styles.stepBtnDisabled]}>
                   <Feather name="minus" size={15} color={canDecrement ? BLUE_ACCENT : '#94A3B8'} />
                 </Pressable>
                 <Text style={styles.stepQty}>{size.quantity}</Text>
                 <Pressable
                   onPress={() => onIncrementSize(size.variantId, size.quantity)}
-                  style={styles.stepBtn}
-                >
+                  style={styles.stepBtn}>
                   <Feather name="plus" size={15} color={BLUE_ACCENT} />
                 </Pressable>
               </View>
 
-              <View style={styles.amountBlock}>
+              <View style={[styles.amountBlock, !visible.price && hidden]}>
                 <Text style={styles.amount}>{formatCurrency(size.subtotal)}</Text>
               </View>
 
               <Pressable
                 onPress={() => onRemoveSize(size.variantId)}
                 disabled={!canDecrement}
-                style={[styles.removeBtn, !canDecrement && styles.removeBtnDisabled]}
-              >
+                style={[styles.removeBtn, !canDecrement && styles.removeBtnDisabled, !visible.buttons && hidden]}>
                 <Feather name="trash-2" size={14} color="#DC2626" />
               </Pressable>
             </View>
@@ -116,8 +128,14 @@ export default function GarmentCartGroupCard({
         })}
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>{group.totalQuantity} pcs</Text>
-          <Text style={styles.footerText}>{group.sizes.length} sizes</Text>
+          <View>
+            <Text style={[styles.footerTotal, !visible.quantity && hidden]}>{group.totalQuantity} total pieces</Text>
+            <Text style={[styles.footerAmount, !visible.price && hidden]}>{formatCurrency(group.subtotal)}</Text>
+          </View>
+          <Pressable onPress={onRemoveProduct} hitSlop={8} style={[styles.removeProductBtn, !visible.buttons && hidden]}>
+            <Feather name="trash-2" size={14} color="#DC2626" />
+            <Text style={styles.removeProductText}>Remove product</Text>
+          </Pressable>
         </View>
       </View>
     </View>
@@ -126,13 +144,13 @@ export default function GarmentCartGroupCard({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: OMS_COLORS.surfaceTint,
     borderRadius: 24,
     borderWidth: 1,
     borderColor: BORDER,
     marginBottom: 16,
     overflow: 'hidden',
-    shadowColor: '#000',
+    shadowColor: OMS_COLORS.primaryDeep,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -140,13 +158,18 @@ const styles = StyleSheet.create({
   },
   imageShell: {
     height: 180,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OMS_COLORS.accentSoft,
     alignItems: 'center',
     justifyContent: 'center',
+    padding: 8,
   },
   image: {
-    width: 210,
-    height: 180,
+    width: '100%',
+    height: '100%',
+  },
+  imagePressable: {
+    width: '100%',
+    height: '100%',
   },
   placeholder: {
     width: 210,
@@ -202,7 +225,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 999,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OMS_COLORS.primarySoft,
     borderWidth: 1,
     borderColor: '#CBD5E1',
   },
@@ -217,13 +240,13 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     borderWidth: 1,
     borderStyle: 'dashed',
-    borderColor: '#FCD34D',
-    backgroundColor: '#FFFBEB',
+    borderColor: OMS_COLORS.primaryBorder,
+    backgroundColor: OMS_COLORS.primarySoft,
   },
   setTitle: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#111827',
+    color: OMS_COLORS.primaryDeep,
   },
   setSubtitle: {
     marginTop: 4,
@@ -301,7 +324,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   stepBtnDisabled: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: OMS_COLORS.primarySoft,
   },
   stepQty: {
     fontSize: 14,
@@ -332,15 +355,35 @@ const styles = StyleSheet.create({
   },
   footer: {
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
     marginTop: 14,
     paddingTop: 12,
     borderTopWidth: 1,
     borderTopColor: '#E2E8F0',
   },
-  footerText: {
-    fontSize: 12,
+  footerTotal: {
+    fontSize: 11,
+    color: '#64748B',
+  },
+  footerAmount: {
+    marginTop: 2,
+    fontSize: 14,
     fontWeight: '700',
-    color: GOLD,
+    color: BLUE,
+  },
+  removeProductBtn: {
+    minHeight: 36,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    backgroundColor: '#FEF2F2',
+  },
+  removeProductText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#DC2626',
   },
 });

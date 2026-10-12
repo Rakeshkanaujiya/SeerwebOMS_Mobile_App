@@ -2,29 +2,42 @@
   "expo": {
     "name": "SeerwebOMS",
     "slug": "SeerwebOMS",
-    "version": "1.0.0",
-    "orientation": "portrait",
+    "version": "1.0.3",
+    "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "image": "./assets/splash.png",
+      "image": "./assets/adaptive-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#48C7EC"
     },
     "assetBundlePatterns": [
       "**/*"
     ],
     "ios": {
       "supportsTablet": true,
-      "icon": "./assets/icon.png"
+      "icon": "./assets/icon.png",
+      "infoPlist": {
+        "NSSpeechRecognitionUsageDescription": "Allow $(PRODUCT_NAME) to use speech recognition.",
+        "NSMicrophoneUsageDescription": "Allow $(PRODUCT_NAME) to use the microphone."
+      }
     },
     "android": {
+      "versionCode": 9,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "monochromeImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.kanaujiyar38.SeerwebOMS"
+      "softwareKeyboardLayoutMode": "resize",
+      "package": "oms.seerweberp.com",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "androidNavigationBar": {
+      "backgroundColor": "#48C7EC",
+      "barStyle": "light-content"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -34,12 +47,25 @@
     },
     "plugins": [
       "expo-font",
-      "expo-speech-recognition"
+      "expo-speech-recognition",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/adaptive-icon.png",
+          "imageWidth": 220,
+          "resizeMode": "contain",
+          "backgroundColor": "#48C7EC",
+          "dark": {
+            "backgroundColor": "#48C7EC"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {
-        "projectId": "fba4cda1-c63c-4e7f-9892-805f37e4b0eb"
+        "projectId": "6f6df465-bf5e-4341-bd7d-ff14393fadf5"
       }
-    }
+    },
+    "owner": "visiontallysolutions"
   }
 }

@@ -2,7 +2,6 @@ import React, { useEffect, useState } from 'react';
 import {
   View,
   Text,
-  ScrollView,
   Pressable,
   Switch,
   TextInput,
@@ -17,13 +16,16 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../types/navigation';
-import BottomTabNavigator from 'components/BottomTabNavigator';
+import BottomTabNavigator, { clearRoleCache } from 'components/BottomTabNavigator';
 import { useTheme } from '../context/ThemeContext';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Feather, Ionicons, MaterialIcons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
 import Navbar from 'components/Navbar';
+import KeyboardAwareScrollView from 'components/KeyboardAwareScrollView';
 import { apiUrl } from 'apiurl';
+import { EventRegister } from 'react-native-event-listeners';
+import { CART_USER_CHANGED_EVENT, getCartStorageKey } from '../context/CartContext';
 
 interface NotificationSettings {
   orderUpdates: boolean;
@@ -38,7 +40,7 @@ interface UserProfile {
   email: string;
   phone: string;
   role: string;
-  store_name?: string;
+  ledger?: string;
 }
 
 export default function ProfileScreen() {
@@ -85,7 +87,11 @@ export default function ProfileScreen() {
       setLoading(false);
     }
   };
+// Rate should get update from last party sales order & item details
 
+// fetch and save the sales from tally to oms database for the new task.. below
+
+// the items have thier price or rate but sometime the dealer may change the rate for the items according to thier retailers or custiomers which is available in the sales in tally in the 
   const loadNotificationSettings = async () => {
     try {
       const settings = await AsyncStorage.getItem('notificationSettings');
@@ -140,7 +146,16 @@ export default function ProfileScreen() {
 
   const handleLogout = async () => {
     try {
-      await AsyncStorage.multiRemove(['user', 'cart', 'selectedRetailer']);
+      const userId = user?.id ?? null;
+      await AsyncStorage.multiRemove([
+        'user',
+        'token',
+        'cart',
+        getCartStorageKey(userId),
+        'selectedRetailer',
+      ]);
+      EventRegister.emit(CART_USER_CHANGED_EVENT, null);
+      clearRoleCache();
       navigation.reset({ index: 0, routes: [{ name: 'Login' }] });
     } catch {
       Alert.alert('Error', 'Failed to logout');
@@ -185,7 +200,7 @@ export default function ProfileScreen() {
 
   if (loading) {
     return (
-      <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+      <SafeAreaView style={{ flex: 1, backgroundColor: 'transparent' }} edges={['top']}>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={colors.primary} />
         </View>
@@ -194,17 +209,18 @@ export default function ProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+    <SafeAreaView style={{ flex: 1, backgroundColor: 'transparent' }} edges={['top']}>
       <Navbar user={user?.name} />
-      <ScrollView
+      <KeyboardAwareScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
+        extraScrollHeight={36}
       >
         {/* Header */}
         <View style={styles.headerContainer}>
-          <Text style={[styles.headerTitle, { color: colors.text }]}>Settings</Text>
-          <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
+          <Text style={[styles.headerTitle, { color: '#FFFFFF' }]}>Settings</Text>
+          <Text style={[styles.headerSubtitle, { color: 'rgba(255,255,255,0.82)' }]}>
             Manage your account and preferences
           </Text>
         </View>
@@ -336,7 +352,7 @@ export default function ProfileScreen() {
         </Pressable>
 
         <View style={{ height: 16 }} />
-      </ScrollView>
+      </KeyboardAwareScrollView>
 
       {/* Edit Profile Modal */}
       <Modal
@@ -345,7 +361,7 @@ export default function ProfileScreen() {
         animationType="fade"
         onRequestClose={() => setEditModalVisible(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAwareScrollView contentContainerStyle={styles.modalOverlay} extraScrollHeight={36}>
           <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
             <Text style={[styles.modalTitle, { color: colors.text }]}>
               Edit {getFieldLabel(editField)}
@@ -423,7 +439,7 @@ export default function ProfileScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAwareScrollView>
       </Modal>
 
       {/* Logout Confirmation Modal */}
@@ -433,7 +449,7 @@ export default function ProfileScreen() {
         animationType="fade"
         onRequestClose={() => setLogoutModalVisible(false)}
       >
-        <View style={styles.modalOverlay}>
+        <KeyboardAwareScrollView contentContainerStyle={styles.modalOverlay} extraScrollHeight={36}>
           <View style={[styles.modalCard, { backgroundColor: colors.card }]}>
             <View style={styles.logoutModalContent}>
               <View style={styles.logoutIconWrapper}>
@@ -441,7 +457,7 @@ export default function ProfileScreen() {
               </View>
               <Text style={[styles.modalTitle, { color: colors.text }]}>Logout</Text>
               <Text style={[styles.logoutModalText, { color: colors.textSecondary }]}>
-                Are you sure you want to logout? You'll need to login again to access your account.
+                Are you sure you want to logout? You&apos;ll need to login again to access your account.
               </Text>
             </View>
             <View style={styles.modalButtons}>
@@ -459,7 +475,7 @@ export default function ProfileScreen() {
               </Pressable>
             </View>
           </View>
-        </View>
+        </KeyboardAwareScrollView>
       </Modal>
 
       <BottomTabNavigator />
@@ -475,6 +491,7 @@ const styles = StyleSheet.create({
   },
   scrollView: {
     flex: 1,
+    backgroundColor: 'transparent',
     paddingHorizontal: 16,
     paddingTop: 16,
   },

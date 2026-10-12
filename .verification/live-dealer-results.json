@@ -1,0 +1,62 @@
+{
+  "role": "dealer",
+  "dealer": "22363",
+  "checks": [
+    {
+      "customersTotal": 1312,
+      "customersAscending": true,
+      "tallyRatesEnabled": true,
+      "schemaFields": 25,
+      "productSettings": true,
+      "gstSlabs": 0,
+      "cartSettingsAvailable": false
+    },
+    {
+      "localOrderPreviewOnly": true,
+      "party": "36724",
+      "productId": 2528,
+      "quantity": 7,
+      "rate": 480,
+      "taxableValue": 3360,
+      "gst": 168,
+      "total": 3528,
+      "missingGst": false
+    },
+    {
+      "party": "36724",
+      "productsTotal": 334,
+      "productPageRows": 30,
+      "historyItems": 1,
+      "sorted": true,
+      "effectiveRates": true,
+      "targetedCartIds": 3,
+      "search": true,
+      "partyRatesOnPage": 2
+    },
+    {
+      "localOrderPreviewOnly": true,
+      "party": "36754",
+      "productId": 2528,
+      "quantity": 7,
+      "rate": 520.04,
+      "taxableValue": 3640.28,
+      "gst": 182.01,
+      "total": 3822.29,
+      "missingGst": false
+    },
+    {
+      "party": "36754",
+      "productsTotal": 334,
+      "productPageRows": 30,
+      "historyItems": 4,
+      "sorted": true,
+      "effectiveRates": true,
+      "targetedCartIds": 3,
+      "search": true,
+      "partyRatesOnPage": 0
+    }
+  ],
+  "errors": [
+    "/cart-settings?dealerid=22363: HTTP 500"
+  ]
+}

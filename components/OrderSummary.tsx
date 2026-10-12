@@ -6,27 +6,38 @@ import {
   StyleSheet,
 } from 'react-native';
 import { formatCurrency } from '../src/lib/app';
+import { OMS_COLORS } from '../src/lib/theme';
 
 interface OrderSummaryProps {
   totalItems: number;
   totalPrice: number;
+  subtotal?: number;
+  gst?: number;
+  totalSets?: number;
+  productCount?: number;
   onCheckout: () => void;
   customerName?: string | null;
   checkoutLabel?: string;
   disabled?: boolean;
   helperText?: string | null;
+  showPricing?: boolean;
 }
 
-const BLUE = '#185FA5';
+const BLUE = OMS_COLORS.primary;
 
 export default function OrderSummary({
   totalItems,
   totalPrice,
+  subtotal = totalPrice,
+  gst = 0,
+  totalSets = 0,
+  productCount,
   onCheckout,
   customerName,
   checkoutLabel = 'Checkout',
   disabled = false,
   helperText,
+  showPricing = true,
 }: OrderSummaryProps) {
   return (
     <View style={styles.container}>
@@ -42,30 +53,43 @@ export default function OrderSummary({
         </View>
       ) : null}
 
-      {/* Items Row */}
-      <View style={styles.row}>
-        <Text style={styles.label}>
-          Items ({totalItems})
-        </Text>
+      {productCount !== undefined ? (
+        <View style={styles.row}>
+          <Text style={styles.label}>Products</Text>
+          <Text style={styles.value}>{productCount}</Text>
+        </View>
+      ) : null}
 
-        <Text style={styles.value}>
-          {formatCurrency(totalPrice)}
-        </Text>
+      <View style={styles.row}>
+        <Text style={styles.label}>Total Pieces</Text>
+        <Text style={styles.value}>{totalItems}</Text>
       </View>
 
-      {/* Divider */}
-      <View style={styles.divider} />
+      {totalSets > 0 ? (
+        <View style={styles.row}>
+          <Text style={styles.label}>Total Sets</Text>
+          <Text style={styles.value}>{totalSets}</Text>
+        </View>
+      ) : null}
 
-      {/* Total Row */}
-      <View style={styles.row}>
-        <Text style={styles.totalLabel}>
-          Total
-        </Text>
+      {showPricing ? <View style={styles.row}>
+        <Text style={styles.label}>Subtotal</Text>
+        <Text style={styles.value}>{formatCurrency(subtotal)}</Text>
+      </View> : null}
 
-        <Text style={styles.totalValue}>
-          {formatCurrency(totalPrice)}
-        </Text>
-      </View>
+      {showPricing && gst > 0 ? (
+        <View style={styles.row}>
+          <Text style={styles.label}>GST (per item)</Text>
+          <Text style={styles.value}>{formatCurrency(gst)}</Text>
+        </View>
+      ) : null}
+
+      {showPricing ? <View style={styles.divider} /> : null}
+
+      {showPricing ? <View style={styles.row}>
+        <Text style={styles.totalLabel}>Total</Text>
+        <Text style={styles.totalValue}>{formatCurrency(totalPrice)}</Text>
+      </View> : null}
 
       {/* Checkout Button */}
       <Pressable
@@ -86,13 +110,13 @@ export default function OrderSummary({
 const styles = StyleSheet.create({
   container: {
     marginTop: 12,
-    backgroundColor: '#fff',
+    backgroundColor: OMS_COLORS.surfaceTint,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: 'rgba(255,255,255,0.7)',
     padding: 14,
 
-    shadowColor: '#000',
+    shadowColor: OMS_COLORS.primaryDeep,
     shadowOffset: {
       width: 0,
       height: 2,
@@ -105,7 +129,7 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#111827',
+    color: OMS_COLORS.primaryDeep,
     marginBottom: 12,
   },
   customerPill: {
@@ -114,42 +138,43 @@ const styles = StyleSheet.create({
     paddingVertical: 9,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#DCFCE7',
-    backgroundColor: '#F0FDF4',
+    borderColor: OMS_COLORS.primaryBorder,
+    backgroundColor: OMS_COLORS.primarySoft,
   },
   customerText: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#166534',
+    color: OMS_COLORS.primaryDeep,
   },
 
   row: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: 8,
   },
 
   label: {
     fontSize: 13,
-    color: '#6B7280',
+    color: OMS_COLORS.textMuted,
   },
 
   value: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#374151',
+    color: OMS_COLORS.primaryDeep,
   },
 
   divider: {
     height: 1,
-    backgroundColor: '#F3F4F6',
+    backgroundColor: OMS_COLORS.primaryBorder,
     marginVertical: 12,
   },
 
   totalLabel: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#111827',
+    color: OMS_COLORS.primaryDeep,
   },
 
   totalValue: {
@@ -178,6 +203,6 @@ const styles = StyleSheet.create({
     marginTop: 8,
     textAlign: 'center',
     fontSize: 12,
-    color: '#B45309',
+    color: OMS_COLORS.primaryDeep,
   },
 });

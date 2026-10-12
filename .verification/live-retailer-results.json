@@ -1,0 +1,40 @@
+{
+  "role": "retailer",
+  "dealer": "39360",
+  "checks": [
+    {
+      "customersTotal": 1283,
+      "customersAscending": true,
+      "tallyRatesEnabled": true,
+      "schemaFields": 25,
+      "productSettings": true,
+      "gstSlabs": 0,
+      "cartSettingsAvailable": false
+    },
+    {
+      "localOrderPreviewOnly": true,
+      "party": "39959",
+      "productId": 2379,
+      "quantity": 7,
+      "rate": 285.71,
+      "taxableValue": 1999.97,
+      "gst": 100,
+      "total": 2099.97,
+      "missingGst": false
+    },
+    {
+      "party": "39959",
+      "productsTotal": 347,
+      "productPageRows": 30,
+      "historyItems": "retailer uses embedded history",
+      "sorted": true,
+      "effectiveRates": true,
+      "targetedCartIds": 3,
+      "search": true,
+      "partyRatesOnPage": 0
+    }
+  ],
+  "errors": [
+    "/cart-settings?dealerid=39360: HTTP 500"
+  ]
+}

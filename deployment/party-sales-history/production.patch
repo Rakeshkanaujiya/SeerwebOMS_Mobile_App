@@ -1,0 +1,87 @@
+--- app/Controllers/ProductController.php
++++ app/Controllers/ProductController.php
+@@ -751,1 +751,78 @@
++    /**
++     * Return product ordering totals for one customer within one dealer.
++     * An empty history is a successful response because new customers have no
++     * previous orders yet.
++     */
++    public function salesHistory()
++    {
++        $this->format = 'json';
++        $dealerId = trim((string)$this->request->getGet('dealerid'));
++        $retailerId = trim((string)$this->request->getGet('retailer_id'));
++
++        if ($dealerId === '' || !ctype_digit($dealerId) || (int)$dealerId <= 0) {
++            return $this->failValidationErrors('A valid dealerid is required');
++        }
++        if ($retailerId === '' || !ctype_digit($retailerId) || (int)$retailerId <= 0) {
++            return $this->failValidationErrors('A valid retailer_id is required');
++        }
++
++        $db = \Config\Database::connect();
++        $actor = $this->currentActor($db);
++        if (!$actor) {
++            return $this->failUnauthorized('Unauthorized');
++        }
++
++        $role = (string)($actor['role'] ?? '');
++        $actorDealerId = $role === 'dealer'
++            ? (string)($actor['id'] ?? '')
++            : (string)($actor['dealer_id'] ?? '');
++        if (!in_array($role, ['dealer', 'staff'], true) || $actorDealerId !== $dealerId) {
++            return $this->failForbidden('You cannot view sales history for this dealer');
++        }
++
++        try {
++            $retailerExists = $db->table('users')
++                ->where('id', (int)$retailerId)
++                ->where('role', 'retailer')
++                ->where('CAST(dealer_id AS CHAR)', $dealerId)
++                ->limit(1)
++                ->countAllResults() > 0;
++            if (!$retailerExists) {
++                return $this->failNotFound('Customer not found for this dealer');
++            }
++
++            $rows = $db->table('order_items oi')
++                ->select(
++                    'oi.product_id, COALESCE(SUM(oi.quantity), 0) AS ordered_quantity, '
++                    . 'COUNT(DISTINCT oi.order_id) AS order_count',
++                    false
++                )
++                ->join('orders o', 'o.id = oi.order_id')
++                ->where('CAST(o.dealer_id AS CHAR)', $dealerId)
++                ->where('CAST(o.retailer_id AS CHAR)', $retailerId)
++                ->where('oi.product_id IS NOT NULL', null, false)
++                ->where('o.status !=', 'cancelled')
++                ->groupBy('oi.product_id')
++                ->get()
++                ->getResultArray();
++
++            $history = [];
++            foreach ($rows as $row) {
++                $history[(string)$row['product_id']] = [
++                    'quantity' => (float)$row['ordered_quantity'],
++                    'order_count' => (int)$row['order_count'],
++                ];
++            }
++
++            return $this->respond((object)$history);
++        } catch (\Throwable $e) {
++            log_message(
++                'error',
++                'Customer sales history failed for dealer {dealer}, retailer {retailer}: {error}',
++                ['dealer' => $dealerId, 'retailer' => $retailerId, 'error' => $e->getMessage()]
++            );
++            return $this->failServerError('Unable to load customer sales history');
++        }
++    }
++
+     // ── POST /products ────────────────────────────────────────────────────────
+--- app/Config/Routes.php
++++ app/Config/Routes.php
+@@ -159,1 +159,3 @@
+     $routes->get('', 'ProductController::index');
++
++    $routes->get('sales-history', 'ProductController::salesHistory');

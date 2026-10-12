@@ -1,10 +1,14 @@
-import React from 'react';
+import { CartSettings, DEFAULT_CART_SETTINGS } from '../src/lib/cartSettings';
+import React, { useEffect, useState } from 'react';
 import { Feather } from '@expo/vector-icons';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { formatCurrency } from '../src/lib/app';
 import type { CartRow } from '../src/lib/cart';
+import { OMS_COLORS } from '../src/lib/theme';
 
 interface CartLineItemProps {
+  onQuantityChange?: (quantity: number) => void;
+  settings?: CartSettings;
   row: CartRow;
   onIncrement: () => void;
   onDecrement: () => void;
@@ -12,78 +16,104 @@ interface CartLineItemProps {
   onImagePress?: (imageUri: string) => void;
 }
 
-const BLUE = '#185FA5';
-const BLUE_LIGHT = '#EFF6FF';
-const BORDER = '#E5E7EB';
+const BLUE = OMS_COLORS.primary;
+const BLUE_LIGHT = OMS_COLORS.primarySoft;
+const BORDER = OMS_COLORS.primaryBorder;
 const TEXT_MUTED = '#6B7280';
 const RED = '#DC2626';
 
 export default function CartLineItem({
+  onQuantityChange,
   row,
   onIncrement,
   onDecrement,
   onRemove,
   onImagePress,
+  settings = DEFAULT_CART_SETTINGS,
 }: CartLineItemProps) {
+  const [draft, setDraft] = useState(String(row.quantity));
+  useEffect(() => setDraft(String(row.quantity)), [row.quantity]);
+  const commitQuantity = () => {
+    const value = Number(draft);
+    const quantity = draft.trim() && Number.isSafeInteger(value) && value > 0 ? value : 1;
+    setDraft(String(quantity));
+    onQuantityChange?.(quantity);
+  };
+  const visible = settings.visibleDetails;
+  const hidden = { display: 'none' as const };
   return (
     <View style={styles.card}>
       <View style={styles.topRow}>
-        {row.imageUri ? (
+        {visible.image && row.imageUri ? (
           <Pressable
             disabled={!onImagePress}
             onPress={() => onImagePress?.(row.imageUri!)}
-            style={styles.imageWrap}
+            style={[styles.imageWrap, !visible.image && hidden]}
           >
             <Image source={{ uri: row.imageUri }} style={styles.image} resizeMode="cover" />
           </Pressable>
-        ) : (
+        ) : visible.image ? (
           <View style={[styles.imageWrap, styles.imagePlaceholder]}>
             <Feather name="image" size={18} color="#9CA3AF" />
           </View>
-        )}
+        ) : null}
 
         <View style={styles.content}>
           <View style={styles.titleRow}>
             <View style={styles.titleBlock}>
-              <Text style={styles.title} numberOfLines={2}>
+              <Text style={[styles.title, !visible.productName && hidden]} numberOfLines={2}>
                 {row.name}
               </Text>
-              {(row.brand || row.model) && (
+              {((visible.brand && row.brand) || (visible.model && row.model)) && (
                 <Text style={styles.meta} numberOfLines={1}>
-                  {[row.brand, row.model].filter(Boolean).join(' • ')}
+                  {[visible.brand ? row.brand : '', visible.model ? row.model : ''].filter(Boolean).join(' • ')}
                 </Text>
               )}
             </View>
 
-            <Pressable onPress={onRemove} hitSlop={8} style={styles.removeBtn}>
+            <Pressable onPress={onRemove} hitSlop={8} style={[styles.removeBtn, !visible.buttons && hidden]}>
               <Feather name="trash-2" size={16} color={RED} />
             </Pressable>
           </View>
 
-          <View style={styles.badgeRow}>
-            <View style={styles.categoryBadge}>
+          {visible.category || (visible.variant && row.variantLabel) ? <View style={styles.badgeRow}>
+            {visible.category ? <View style={styles.categoryBadge}>
               <Text style={styles.categoryText}>{row.categoryLabel}</Text>
-            </View>
-            {row.variantLabel ? (
+            </View> : null}
+            {visible.variant && row.variantLabel ? (
               <View style={styles.variantBadge}>
                 <Text style={styles.variantText}>{row.variantLabel}</Text>
               </View>
             ) : null}
-          </View>
+          </View> : null}
         </View>
       </View>
 
       <View style={styles.bottomRow}>
         <View>
-          <Text style={styles.price}>{formatCurrency(row.price)}</Text>
-          <Text style={styles.subtotal}>Subtotal {formatCurrency(row.subtotal)}</Text>
+          <Text style={[styles.price, !visible.price && hidden]}>{formatCurrency(row.price)}</Text>
+          <Text style={[styles.subtotal, !visible.price && hidden]}>Subtotal {formatCurrency(row.subtotal)}</Text>
         </View>
 
-        <View style={styles.stepper}>
+        <View style={[styles.stepper, !visible.quantity && hidden]}>
           <Pressable onPress={onDecrement} style={styles.stepperBtn} hitSlop={8}>
             <Feather name="minus" size={18} color={BLUE} />
           </Pressable>
-          <Text style={styles.quantity}>{row.quantity}</Text>
+          {onQuantityChange ? <TextInput
+            style={styles.quantity}
+            value={draft}
+            keyboardType="number-pad"
+            accessibilityLabel={`Quantity for ${row.name}`}
+            onChangeText={value => {
+              const next = value.replace(/[^0-9]/g, '');
+              setDraft(next);
+              const quantity = Number(next);
+              if (Number.isSafeInteger(quantity) && quantity > 0) onQuantityChange(quantity);
+            }}
+            onBlur={commitQuantity}
+            onSubmitEditing={commitQuantity}
+            selectTextOnFocus
+          /> : <Text style={styles.quantity}>{row.quantity}</Text>}
           <Pressable
             onPress={onIncrement}
             style={styles.stepperBtn}
@@ -99,13 +129,13 @@ export default function CartLineItem({
 
 const styles = StyleSheet.create({
   card: {
-    backgroundColor: '#FFFFFF',
+    backgroundColor: OMS_COLORS.surfaceTint,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: BORDER,
     padding: 14,
     marginBottom: 12,
-    shadowColor: '#000',
+    shadowColor: OMS_COLORS.primaryDeep,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
     shadowRadius: 4,
@@ -146,7 +176,7 @@ const styles = StyleSheet.create({
     fontSize: 15,
     lineHeight: 20,
     fontWeight: '700',
-    color: '#111827',
+    color: OMS_COLORS.primaryDeep,
   },
   meta: {
     marginTop: 2,
@@ -228,6 +258,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     fontSize: 15,
     fontWeight: '700',
-    color: '#111827',
+    color: OMS_COLORS.primaryDeep,
   },
 });

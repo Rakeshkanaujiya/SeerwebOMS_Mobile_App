@@ -5,6 +5,7 @@ export type UserRole = 'retailer' | 'staff' | 'dealer';
 const ROLE_ROUTES: Partial<Record<UserRole, keyof RootStackParamList>> = {
   retailer: 'RetailerDashboard',
   staff: 'StaffDashboard',
+  dealer: 'StaffDashboard',
 };
 
 export function safeJsonParse<T>(value: string | null, fallback: T): T {

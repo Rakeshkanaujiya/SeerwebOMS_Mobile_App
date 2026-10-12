@@ -1,0 +1,17 @@
+/* layout.css */
+.responsive-bg {
+    background-image: url('/images/home2.jpg');
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    background-size: contain;
+    background-position: top center;
+  }
+  
+  @media (max-width: 768px) {
+    .responsive-bg {
+      background-image: url('/images/home_mobile.png'); /* Your mobile-specific image */
+      background-size: contain;
+      background-position: center;
+    }
+  }
+  

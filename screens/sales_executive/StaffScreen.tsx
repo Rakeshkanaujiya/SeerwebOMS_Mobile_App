@@ -1,79 +1,324 @@
-import React, { useCallback, useEffect, useMemo, useState, memo } from 'react';
+import { CartSettings, DealerProductSchemaField, useDealerDisplaySettings } from '../../src/lib/cartSettings';
+import { useWindowDimensions } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
+import React, { useCallback, useEffect, useMemo, useRef, useState, memo } from 'react';
 import {
-  View, Text, ScrollView, TextInput, FlatList,
-  Pressable, ActivityIndicator, Linking, Platform
+  View,
+  Text,
+  TextInput,
+  FlatList,
+  Pressable,
+  Linking,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as DocumentPicker from 'expo-document-picker';
+import * as XLSX from 'xlsx';
+import { apiUrl } from 'apiurl';
 import BottomTabNavigator from 'components/BottomTabNavigator';
 import CustomAlert from 'components/CustomAlert';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
-import { cachedGet } from 'src/lib/services/api';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useNavigation, useRoute } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import type { RouteProp } from '@react-navigation/native';
+import type { RootStackParamList } from '../../types/navigation';
+import { apiGet } from 'src/lib/services/api';
+import { useServerPage, useDebouncedValue } from '../../src/lib/useServerPage';
+import PageControls from '../../components/PageControls';
+import { Picker } from '@react-native-picker/picker';
 import Navbar from 'components/Navbar';
-import ProductCart, { Product, ProductVariant, CartItem } from 'components/ProductCart';
+import ProductCart, {
+  Product,
+  ProductVariant,
+  CartItem,
+  AddVariantOptions,
+} from 'components/ProductCart';
 import { useCart } from '../../context/CartContext';
+import { createCartSnapshotItem, getCartLinePieceQuantity } from '../../src/lib/cart';
+import {
+  hydrateStaffCreateCustomerPermission,
+  refreshAuthenticatedUser,
+} from '../../src/lib/auth';
+import { getCustomerDealerId } from '../../src/lib/customers';
+import { canManageProductsForUser } from '../../src/lib/permissions';
+import { OMS_COLORS } from '../../src/lib/theme';
+import AppScreen from '../../components/AppScreen';
+import KeyboardAwareScrollView from '../../components/KeyboardAwareScrollView';
+import ScreenSkeleton from '../../components/ScreenSkeleton';
+import {
+  DEFAULT_PRODUCT_FIELD_SETTINGS,
+  DEFAULT_PRODUCT_LIST_SETTINGS,
+  DEFAULT_PRODUCT_SECTION_SETTINGS,
+  getCachedProductSettings,
+  loadProductListSettings,
+  ProductListSettings,
+} from '../../src/lib/dealerSettings';
+import { logScreenError } from '../../src/lib/logging';
+import { useCartPricing } from '../../src/lib/useCartPricing';
+
 
 /* -------------------- INTERFACES -------------------- */
 
+const DAIRY_PRODUCT_EXCEL_COLUMNS = [
+  'Product Name',
+  'Category',
+  'Brand',
+  'SKU',
+  'Barcode',
+  'Purchase Price',
+  'Selling Price',
+  'MRP',
+  'GST %',
+  'Stock',
+  'Minimum Stock',
+  'Pack Size',
+  'Unit',
+  'Packaging',
+  'Flavor',
+  'Type',
+  'Storage',
+  'Batch Number',
+  'Manufacturing Date',
+  'Expiry Date',
+  'Shelf Life',
+  'Storage Type',
+  'Supplier Name',
+  'Description',
+] as const;
+
+const normalizeExcelHeader = (value: unknown) =>
+  String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '');
+
+const getExcelValue = (row: Record<string, any>, column: string) => {
+  const expected = normalizeExcelHeader(column);
+  const matchedKey = Object.keys(row).find((key) => normalizeExcelHeader(key) === expected);
+  return matchedKey ? row[matchedKey] : '';
+};
+
+const toExcelNumber = (value: unknown) => {
+  const cleaned = String(value ?? '').replace(/[^0-9.-]/g, '');
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const normalizeProductPayload = (item: any): Product => {
+  let attrs: Record<string, any> = {};
+  if (item.attributes) {
+    try {
+      attrs = typeof item.attributes === 'string' ? JSON.parse(item.attributes) : item.attributes;
+    } catch (error) {
+      logScreenError('StaffScreen.parseProductAttributes', error, { productId: item.id });
+      attrs = {};
+    }
+  }
+
+  return {
+    id: Number(item.id),
+    name: item.name || '',
+    brand: item.brand || attrs.brand || '',
+    model: item.model || attrs.model || '',
+    price: Number(item.effective_rate ?? item.price),
+    stock_item_rate: item.stock_item_rate == null ? undefined : Number(item.stock_item_rate),
+    party_rate: item.party_rate == null ? undefined : Number(item.party_rate),
+    effective_rate: item.effective_rate == null ? undefined : Number(item.effective_rate),
+    stock: Number(item.stock),
+    description: item.description || '',
+    dealerid: Number(item.dealerid),
+    image: item.image || null,
+    size_range: item.size_range || attrs.size_range || '',
+    attributes: attrs,
+    business_type_id: item.business_type_id ?? null,
+    variants: item.variants ?? [],
+    size_sets: Array.isArray(item.size_sets)
+      ? item.size_sets
+      : Array.isArray(attrs.selected_size_sets)
+        ? attrs.selected_size_sets
+        : [],
+  };
+};
+
 interface Retailer {
   id: number;
+  username?: string;
   name: string;
-  store_name: string;
+  contact_person?: string;
+  ledger: string;
+  email?: string;
   phone: string;
   address: string;
-  city: string;
+  city?: string;
+  assigned?: string | number | null;
 }
 
 /* -------------------- MEMOIZED PRODUCT CARD -------------------- */
 
 interface RenderItemProps {
   item: Product;
+  businessTypeId?: number | null;
   cart: CartItem[];
-  onAddVariant: (productId: number, variant: ProductVariant, qty: number) => void;
-  onUpdateVariantQty: (productId: number, variantId: number, qty: number) => void;
-  onRemoveVariant: (productId: number, variantId: number) => void;
-  onAddSimple: (productId: number) => void;
+  onAddVariant: (
+    product: Product,
+    variant: ProductVariant,
+    qty: number,
+    options?: AddVariantOptions
+  ) => void;
+  onUpdateVariantQty: (
+    productId: number,
+    variantId: number | string,
+    qty: number,
+    color?: string
+  ) => void;
+  onRemoveVariant: (productId: number, variantId: number | string, color?: string) => void;
+  onAddSimple: (product: Product, quantity?: number) => void;
   onUpdateSimpleQty: (productId: number, qty: number) => void;
   onRemoveSimple: (productId: number) => void;
+  onOpenDetails: (product: Product) => void;
+  canEditProducts: boolean;
+  onEditProduct: (product: Product) => void;
+  productListSettings: ProductListSettings;
+  productFieldSettings: typeof DEFAULT_PRODUCT_FIELD_SETTINGS;
+  productSectionSettings: typeof DEFAULT_PRODUCT_SECTION_SETTINGS;
+  cartSettings: CartSettings;
+  schemaFields: DealerProductSchemaField[] | null;
 }
 
-const MemoProductCard = memo(({
-  item, cart,
-  onAddVariant, onUpdateVariantQty, onRemoveVariant,
-  onAddSimple, onUpdateSimpleQty, onRemoveSimple,
-}: RenderItemProps) => (
-  <ProductCart
-    product={item}
-    showSize={Number(item.business_type_id) === 2}
-    cart={cart}
-    onAddVariant={onAddVariant}
-    onUpdateVariantQty={onUpdateVariantQty}
-    onRemoveVariant={onRemoveVariant}
-    onAddSimple={onAddSimple}
-    onUpdateSimpleQty={onUpdateSimpleQty}
-    onRemoveSimple={onRemoveSimple}
-  />
-));
+const MemoProductCard = memo(
+  ({
+    item,
+    businessTypeId,
+    cart,
+    onAddVariant,
+    onUpdateVariantQty,
+    onRemoveVariant,
+    onAddSimple,
+    onUpdateSimpleQty,
+    onRemoveSimple,
+    onOpenDetails,
+    canEditProducts,
+    onEditProduct,
+    productListSettings,
+    productFieldSettings,
+    productSectionSettings,
+    cartSettings,
+    schemaFields,
+  }: RenderItemProps) => {
+    const effectiveBusinessTypeId =
+      businessTypeId ?? item.business_type_id ?? null;
+    const normalizedProduct = {
+      ...item,
+      business_type_id: effectiveBusinessTypeId,
+    };
+
+    return (
+      <View style={{ position: 'relative', flex: 1, marginHorizontal: 4 }}>
+        <ProductCart
+          product={normalizedProduct}
+          showSize={Number(effectiveBusinessTypeId) === 2}
+          onOpenDetails={onOpenDetails}
+          cart={cart}
+          onAddVariant={onAddVariant}
+          onUpdateVariantQty={onUpdateVariantQty}
+          onRemoveVariant={onRemoveVariant}
+          onAddSimple={onAddSimple}
+          onUpdateSimpleQty={onUpdateSimpleQty}
+          onRemoveSimple={onRemoveSimple}
+          cartSettings={cartSettings}
+          productListSettings={productListSettings}
+          productFieldSettings={productFieldSettings}
+          productSectionSettings={productSectionSettings}
+          schemaFields={schemaFields}
+        />
+        {canEditProducts ? (
+          <Pressable
+            onPress={() => onEditProduct(item)}
+            hitSlop={8}
+            accessibilityLabel={`Edit ${item.name || 'item'}`}
+            style={{
+              position: 'absolute',
+              top: 10,
+              right: 10,
+              width: 36,
+              height: 36,
+              borderRadius: 18,
+              backgroundColor: '#FFFFFF',
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: 1,
+              borderColor: OMS_COLORS.border,
+              elevation: 3,
+            }}>
+            <Ionicons name="create-outline" size={18} color={OMS_COLORS.primary} />
+          </Pressable>
+        ) : null}
+      </View>
+    );
+  }
+);
 MemoProductCard.displayName = 'MemoProductCard';
 
 /* -------------------- MAIN SCREEN -------------------- */
 
 export default function StaffScreen() {
-  const navigation = useNavigation();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const route = useRoute<RouteProp<RootStackParamList, 'StaffScreen'>>();
   const { cart, addToCart, updateCartQuantity, removeFromCart } = useCart();
 
-  const [user, setUser]                           = useState<any>(null);
-  const [retailers, setRetailers]                 = useState<Retailer[]>([]);
-  const [filteredRetailers, setFilteredRetailers] = useState<Retailer[]>([]);
-  const [selectedRetailer, setSelectedRetailer]   = useState<Retailer | null>(null);
-  const [products, setProducts]                   = useState<Product[]>([]);
-  const [filteredProducts, setFilteredProducts]   = useState<Product[]>([]);
-  const [search, setSearch]                       = useState('');
-  const [loading, setLoading]                     = useState(true);
-  const [alertVisible, setAlertVisible]           = useState(false);
-  const [alertMsg, setAlertMsg]                   = useState('');
-  const [activeTab, setActiveTab]                 = useState<'customers' | 'products'>('customers');
+  const [user, setUser] = useState<any>(null);
+  const [initialized, setInitialized] = useState(false);
+  const [initialError, setInitialError] = useState('');
+  const [selectedRetailer, setSelectedRetailer] = useState<Retailer | null>(null);
+  const [search, setSearch] = useState('');
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [category, setCategory] = useState('');
+  const [brand, setBrand] = useState('');
+  const [activeTab, setActiveTab] = useState<'customers' | 'products'>(
+    route.params?.activeTab === 'products' ? 'products' : 'customers'
+  );
+  const productSearch = useDebouncedValue(search);
+  const retailerSearch = useDebouncedValue(customerSearch);
+  const dealerId = getCustomerDealerId(user);
+  const cartPricing = useCartPricing(Number(dealerId), Number(selectedRetailer?.id ?? 0));
+  const customerPage = useServerPage<Retailer>(dealerId ? `/retailers?dealerid=${dealerId}&search=${encodeURIComponent(retailerSearch)}` : null, 'retailers');
+  const productEndpoint = dealerId && initialized
+    ? `/products?dealerid=${dealerId}&create_order=1&retailer_id=${selectedRetailer?.id ?? ''}&search=${encodeURIComponent(productSearch)}&category=${encodeURIComponent(category)}&brand=${encodeURIComponent(brand)}`
+    : null;
+  const productPage = useServerPage<any>(productEndpoint, 'products');
+  const filteredRetailers = customerPage.rows;
+  const filteredProducts = useMemo(() => productPage.rows.map(normalizeProductPayload), [productPage.rows]);
+  const loading = !initialized || productPage.loading || cartPricing.loading;
+  const customersLoading = !initialized || customerPage.loading;
+  const productsError = initialError || productPage.error;
+  const customersError = initialError || customerPage.error;
+  const [alertVisible, setAlertVisible] = useState(false);
+  const [alertMsg, setAlertMsg] = useState('');
+  const displaySettings = useDealerDisplaySettings(dealerId, user?.business_type_id);
+  const productListSettings = displaySettings.list;
+  const productFieldSettings = displaySettings.fieldSettings;
+  const productSectionSettings = displaySettings.sectionSettings;
+  const cartSettings = displaySettings.cart;
+  const { width } = useWindowDimensions();
+  const columns = Math.max(1, Math.min(cartSettings.cardsPerRow, Math.floor((width - 24) / 280)));
+  const appliedRefreshMarkers = useRef({
+    customers: route.params?.refreshCustomersAt,
+    products: route.params?.refreshProductsAt,
+  });
+  useFocusEffect(useCallback(() => {
+    const customerMarker = route.params?.refreshCustomersAt;
+    const productMarker = route.params?.refreshProductsAt;
+    if (customerMarker && customerMarker !== appliedRefreshMarkers.current.customers) {
+      appliedRefreshMarkers.current.customers = customerMarker;
+      customerPage.refresh();
+    }
+    if (productMarker && productMarker !== appliedRefreshMarkers.current.products) {
+      appliedRefreshMarkers.current.products = productMarker;
+      productPage.refresh();
+    }
+  }, [customerPage.refresh, productPage.refresh, route.params?.refreshCustomersAt, route.params?.refreshProductsAt]));
+
+  const canManageProducts = canManageProductsForUser(user);
 
   /* -------------------- ALERT -------------------- */
 
@@ -82,51 +327,56 @@ export default function StaffScreen() {
     setAlertVisible(true);
   }, []);
 
+  const openEditItem = useCallback(
+    (product: Product) => {
+      if (!canManageProducts) {
+        showAlert('You do not have permission to create or edit items.');
+        return;
+      }
+      navigation.navigate('CreateItemMaster', { product, returnTo: 'StaffScreen' });
+    },
+    [canManageProducts, navigation, showAlert]
+  );
+
   /* -------------------- CART HELPERS -------------------- */
 
   const handleAddVariant = useCallback(
-    (productId: number, variant: ProductVariant, qty: number) => {
-      addToCart({
-        productId,
-        variantId: variant.id,
-        size: variant.size,
-        color: variant.color,
-        price: variant.rate ?? variant.mrp ?? 0,
-        quantity: qty,
-        stock: variant.qty,
-      });
-      // showAlert('Added to cart');
+    (
+      product: Product,
+      variant: ProductVariant,
+      qty: number,
+      options?: AddVariantOptions
+    ) => {
+      addToCart(createCartSnapshotItem(product, qty, variant, options));
     },
-    [addToCart, showAlert]
+    [addToCart]
   );
 
   const handleUpdateVariantQty = useCallback(
-    (productId: number, variantId: number, qty: number) => {
-      if (qty <= 0) removeFromCart(productId, variantId);
-      else updateCartQuantity(productId, variantId, Math.min(qty, 999));
+    (productId: number, variantId: number | string, qty: number, color?: string) => {
+      if (qty <= 0) removeFromCart(productId, variantId, color);
+      else updateCartQuantity(productId, variantId, qty, color);
     },
     [removeFromCart, updateCartQuantity]
   );
 
   const handleRemoveVariant = useCallback(
-    (productId: number, variantId: number) => removeFromCart(productId, variantId),
+    (productId: number, variantId: number | string, color?: string) =>
+      removeFromCart(productId, variantId, color),
     [removeFromCart]
   );
 
   const handleAddSimple = useCallback(
-    (productId: number) => {
-      const product = products.find((p) => p.id === productId);
-      if (!product) return;
-      addToCart({ productId, variantId: 0, price: product.price, quantity: 1, stock: product.stock });
-      // showAlert('Added to cart');
+    (product: Product, quantity = 1) => {
+      addToCart(createCartSnapshotItem(product, quantity));
     },
-    [products, addToCart, showAlert]
+    [addToCart]
   );
 
   const handleUpdateSimpleQty = useCallback(
     (productId: number, qty: number) => {
       if (qty <= 0) removeFromCart(productId, 0);
-      else updateCartQuantity(productId, 0, Math.min(qty, 999));
+      else updateCartQuantity(productId, 0, qty);
     },
     [removeFromCart, updateCartQuantity]
   );
@@ -136,10 +386,135 @@ export default function StaffScreen() {
     [removeFromCart]
   );
 
+  const handleOpenDetails = useCallback(
+    (product: Product) => {
+      navigation.navigate('ProductDetails', {
+        productId: product.id,
+        product,
+        businessTypeId: user?.business_type_id ?? product.business_type_id ?? null,
+      });
+    },
+    [navigation, user?.business_type_id]
+  );
+
+  const handleImportDairyProducts = useCallback(async () => {
+    if (!canManageProducts) {
+      showAlert('You do not have permission to import products.');
+      return;
+    }
+    if (Number(user?.business_type_id) !== 3) {
+      showAlert('Dairy import is available only for Dairy dealers.');
+      return;
+    }
+
+    const dealerId = getCustomerDealerId(user);
+    if (!dealerId) {
+      showAlert('Dealer ID is missing.');
+      return;
+    }
+
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [
+          'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          'application/vnd.ms-excel',
+        ],
+        copyToCacheDirectory: true,
+      });
+      if (result.canceled || !result.assets?.[0]?.uri) return;
+
+      const fileResponse = await fetch(result.assets[0].uri);
+      const buffer = await fileResponse.arrayBuffer();
+      const workbook = XLSX.read(buffer, { type: 'array' });
+      const worksheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json<any[]>(worksheet, { header: 1, blankrows: false });
+      const headerRow = (rows[0] || []).map((header) => normalizeExcelHeader(header));
+      const expectedHeaders = DAIRY_PRODUCT_EXCEL_COLUMNS.map((header) => normalizeExcelHeader(header));
+      const headerMatches =
+        headerRow.length === expectedHeaders.length &&
+        expectedHeaders.every((header, index) => headerRow[index] === header);
+
+      if (!headerMatches) {
+        showAlert(`Invalid Dairy template. Required columns: ${DAIRY_PRODUCT_EXCEL_COLUMNS.join(', ')}`);
+        return;
+      }
+
+      const json = XLSX.utils.sheet_to_json<any>(worksheet, { defval: '', raw: false });
+      const productsToImport = json.map((row: Record<string, any>, index: number) => {
+        const productName = String(getExcelValue(row, 'Product Name') || '').trim();
+        const sellingPrice = toExcelNumber(getExcelValue(row, 'Selling Price'));
+        const packSize = String(getExcelValue(row, 'Pack Size') || '').trim();
+
+        if (!productName) throw new Error(`Row ${index + 2} is missing Product Name`);
+        if (sellingPrice <= 0) throw new Error(`Row ${index + 2} must include Selling Price greater than 0`);
+        if (!packSize) throw new Error(`Row ${index + 2} is missing Pack Size`);
+
+        return {
+          product_name: productName,
+          category: String(getExcelValue(row, 'Category') || '').trim(),
+          brand: String(getExcelValue(row, 'Brand') || '').trim(),
+          sku: String(getExcelValue(row, 'SKU') || '').trim(),
+          barcode: String(getExcelValue(row, 'Barcode') || '').trim(),
+          purchase_price: toExcelNumber(getExcelValue(row, 'Purchase Price')),
+          selling_price: sellingPrice,
+          mrp: toExcelNumber(getExcelValue(row, 'MRP')),
+          gst_percent: toExcelNumber(getExcelValue(row, 'GST %')),
+          stock: toExcelNumber(getExcelValue(row, 'Stock')),
+          minimum_stock_alert: toExcelNumber(getExcelValue(row, 'Minimum Stock')),
+          size: packSize,
+          unit: String(getExcelValue(row, 'Unit') || '').trim(),
+          packaging: String(getExcelValue(row, 'Packaging') || '').trim(),
+          flavor: String(getExcelValue(row, 'Flavor') || '').trim(),
+          dairy_type: String(getExcelValue(row, 'Type') || '').trim(),
+          storage: String(getExcelValue(row, 'Storage') || '').trim(),
+          batch_number: String(getExcelValue(row, 'Batch Number') || '').trim(),
+          manufacturing_date: String(getExcelValue(row, 'Manufacturing Date') || '').trim(),
+          expiry_date: String(getExcelValue(row, 'Expiry Date') || '').trim(),
+          shelf_life: String(getExcelValue(row, 'Shelf Life') || '').trim(),
+          storage_type: String(getExcelValue(row, 'Storage Type') || '').trim(),
+          supplier_name: String(getExcelValue(row, 'Supplier Name') || '').trim(),
+          description: String(getExcelValue(row, 'Description') || '').trim(),
+          dealerid: Number(dealerId),
+          business_type_id: 3,
+        };
+      });
+
+      const token = await AsyncStorage.getItem('token');
+      const response = await fetch(`${apiUrl}/products/import`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token || ''}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ products: productsToImport, business_type_id: 3 }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.success) {
+        throw new Error(
+          payload?.messages?.error || payload?.message || payload?.error || 'Failed to import products'
+        );
+      }
+
+      const inserted = (payload.insertedProducts || []).map(normalizeProductPayload);
+      productPage.refresh();
+      showAlert(`Imported ${inserted.length} Dairy products successfully.`);
+    } catch (error) {
+      logScreenError('StaffScreen.importDairyProducts', error);
+      showAlert(error instanceof Error ? error.message : 'Dairy import failed.');
+    }
+  }, [canManageProducts, showAlert, user]);
+
   /* -------------------- CART TOTALS -------------------- */
 
   const totalCartItems = useMemo(
-    () => cart.reduce((s, c) => s + c.quantity, 0),
+    () => cart.reduce((s, c) => s + getCartLinePieceQuantity({
+      quantity: c.quantity,
+      orderMode: c.orderMode,
+      sizeSetSizes: c.sizeSetSizes,
+      garmentMeta: c.garmentMeta && 'sizeSetSizes' in c.garmentMeta
+        ? { sizeSetSizes: (c.garmentMeta as any).sizeSetSizes }
+        : undefined,
+    }), 0),
     [cart]
   );
 
@@ -158,156 +533,187 @@ export default function StaffScreen() {
 
   /* -------------------- SEARCH -------------------- */
 
-  const handleRetailerSearch = (query: string) => {
-    if (!query.trim()) return setFilteredRetailers(retailers);
-    const lower = query.toLowerCase();
-    setFilteredRetailers(retailers.filter(r =>
-      r.name.toLowerCase().includes(lower) ||
-      r.store_name.toLowerCase().includes(lower) ||
-      r.phone.includes(lower) ||
-      r.address.toLowerCase().includes(lower)
-    ));
-  };
-
-  const handleProductSearch = useCallback((query: string) => {
-    setSearch(query);
-    const q = query.toLowerCase();
-    setFilteredProducts(
-      !query.trim() ? products : products.filter(p =>
-        p.name.toLowerCase().includes(q) ||
-        (p.brand ?? '').toLowerCase().includes(q) ||
-        (p.model ?? '').toLowerCase().includes(q) ||
-        Object.values(p.attributes ?? {}).some(v => String(v).toLowerCase().includes(q))
-      )
-    );
-  }, [products]);
+  const handleRetailerSearch = setCustomerSearch;
+  const handleProductSearch = setSearch;
 
   /* -------------------- FETCH DATA -------------------- */
 
   useEffect(() => {
-    let cancelled = false;
-    const fetchData = async () => {
-      setLoading(true);
+    let active = true;
+    void (async () => {
       try {
-        const [userData, token] = await Promise.all([
-          AsyncStorage.getItem('user'),
-          AsyncStorage.getItem('token'),
-        ]);
-        if (cancelled) return;
-        if (!userData || !token) { navigation.navigate('Login' as never); return; }
-
-        const userObj = JSON.parse(userData);
-        setUser(userObj);
-        if (userObj.role !== 'staff') { navigation.navigate('Login' as never); return; }
-
-        const [retData, prodData] = await Promise.all([
-          cachedGet(`/staff/get_retailers_by_executive?executiveid=${userObj.id}`, token),
-          cachedGet(`/products?dealerid=${userObj.dealer_id}`, token),
-        ]);
-        if (cancelled) return;
-
-        setRetailers(retData);
-        setFilteredRetailers(retData);
-
-        const formatted: Product[] = (prodData || []).map((item: any) => {
-          let attrs: Record<string, string> = {};
-          if (item.attributes) {
-            attrs = typeof item.attributes === 'string'
-              ? JSON.parse(item.attributes) : item.attributes;
-          }
-          return {
-            id:               Number(item.id),
-            name:             item.name || '',
-            brand:            item.brand || attrs.brand || '',
-            model:            item.model || attrs.model || '',
-            price:            Number(item.price),
-            stock:            Number(item.stock),
-            description:      item.description || '',
-            dealerid:         Number(item.dealerid),
-            image:            item.image || null,
-            attributes:       attrs,
-            business_type_id: item.business_type_id ?? null,
-            variants:         item.variants ?? [],
-          };
-        });
-
-        setProducts(formatted);
-        setFilteredProducts(formatted);
-
-      } catch (err) {
-        console.error('Error fetching data:', err);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    };
-    fetchData();
-    return () => { cancelled = true; };
-  }, [navigation]);
+        const [raw, token, saved] = await Promise.all([AsyncStorage.getItem('user'), AsyncStorage.getItem('token'), AsyncStorage.getItem('selectedRetailer')]);
+        if (!raw || !token) { navigation.navigate('Login' as never); return; }
+        let actor = JSON.parse(raw);
+        if (!['dealer', 'staff'].includes(actor.role)) { navigation.navigate('Login' as never); return; }
+        if (actor.role === 'staff' && (actor.can_create_products === undefined || actor.can_create_retailers === undefined)) actor = await hydrateStaffCreateCustomerPermission(actor, token);
+        if (!active) return;
+        setUser(actor);
+        void refreshAuthenticatedUser(token, actor).then(fresh => { if (active) setUser(fresh); }).catch(error => logScreenError('StaffScreen.refreshProfile', error));
+        const owner = getCustomerDealerId(actor);
+        if (!owner) return;
+        const savedId = route.params?.createdCustomerId ?? (saved ? JSON.parse(saved).id : null);
+        if (savedId) {
+          const result = await apiGet(`/retailers?dealerid=${owner}&id=${savedId}&page=1&per_page=1`, token);
+          if (active) setSelectedRetailer(result.retailers?.[0] ?? null);
+        }
+        if (active && route.params?.activeTab) setActiveTab(route.params.activeTab === 'products' ? 'products' : 'customers');
+      } catch (error) { logScreenError('StaffScreen.initialize', error); if (active) setInitialError('Unable to load your account. Please sign in again.'); }
+      finally { if (active) setInitialized(true); }
+    })();
+    return () => { active = false; };
+  }, [navigation, route.params?.createdCustomerId, route.params?.refreshCustomersAt, route.params?.refreshProductsAt]);
 
   /* -------------------- RENDER ITEM -------------------- */
 
-  const renderItem = useCallback(({ item }: { item: Product }) => (
-    <MemoProductCard
-      item={item}
-      cart={cart}
-      onAddVariant={handleAddVariant}
-      onUpdateVariantQty={handleUpdateVariantQty}
-      onRemoveVariant={handleRemoveVariant}
-      onAddSimple={handleAddSimple}
-      onUpdateSimpleQty={handleUpdateSimpleQty}
-      onRemoveSimple={handleRemoveSimple}
-    />
-  ), [cart, handleAddVariant, handleUpdateVariantQty, handleRemoveVariant,
-      handleAddSimple, handleUpdateSimpleQty, handleRemoveSimple]);
+  const renderItem = useCallback(
+    ({ item }: { item: Product }) => (
+      <MemoProductCard
+        item={item}
+        businessTypeId={user?.business_type_id}
+        cart={cart}
+        onAddVariant={handleAddVariant}
+        onUpdateVariantQty={handleUpdateVariantQty}
+        onRemoveVariant={handleRemoveVariant}
+        onAddSimple={handleAddSimple}
+        onUpdateSimpleQty={handleUpdateSimpleQty}
+        onRemoveSimple={handleRemoveSimple}
+            onOpenDetails={handleOpenDetails}
+            canEditProducts={canManageProducts}
+            onEditProduct={openEditItem}
+            cartSettings={cartSettings}
+            productListSettings={productListSettings}
+            productFieldSettings={productFieldSettings}
+            productSectionSettings={productSectionSettings}
+            schemaFields={displaySettings.schemaFields}
+          />
+    ),
+    [
+      cart,
+      user?.business_type_id,
+      handleAddVariant,
+      handleUpdateVariantQty,
+      handleRemoveVariant,
+      handleAddSimple,
+      handleUpdateSimpleQty,
+      handleRemoveSimple,
+      handleOpenDetails,
+      canManageProducts,
+      openEditItem,
+      productListSettings,
+      productFieldSettings,
+      productSectionSettings,
+      cartSettings,
+      displaySettings.schemaFields,
+    ]
+  );
 
   /* -------------------- MAIN RETURN -------------------- */
 
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={['top']}>
+    <AppScreen>
       <Navbar user={user?.name} />
 
       {/* ---------- TOP TABS ---------- */}
-      <View style={{
-        backgroundColor: '#fff', padding: 12, margin: 12,
-        borderRadius: 12, elevation: 3,
-        shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 4,
-        flexDirection: 'row',
-      }}>
-        {(['customers', 'products'] as const).map((tab) => (
-          <Pressable
-            key={tab}
-            onPress={() => setActiveTab(tab)}
-            style={{
-              backgroundColor: activeTab === tab ? '#e5e7eb' : 'transparent',
-              paddingVertical: 8, paddingHorizontal: 14,
-              borderRadius: 10, marginRight: tab === 'customers' ? 8 : 0,
-            }}
-          >
-            <Text style={{ fontWeight: '600', textTransform: 'capitalize' }}>
-              {tab === 'customers' ? 'Customers' : 'Create Order'}
-            </Text>
-          </Pressable>
-        ))}
+      <View
+        style={{
+          backgroundColor: OMS_COLORS.surfaceTint,
+          padding: 8,
+          marginHorizontal: 12,
+          marginVertical: 8,
+          borderRadius: 16,
+          elevation: 2,
+          shadowColor: OMS_COLORS.primaryDeep,
+          shadowOpacity: 0.12,
+          shadowRadius: 8,
+          flexDirection: 'row',
+          alignItems: 'center',
+          gap: 6,
+          borderWidth: 1,
+          borderColor: 'rgba(255,255,255,0.72)',
+        }}>
+        <View style={{ flex: 1, minWidth: 0, flexDirection: 'row', gap: 6 }}>
+          {(['customers', 'products'] as const).map((tab) => {
+            const isActive = activeTab === tab;
+            return (
+              <Pressable
+                key={tab}
+                onPress={() => setActiveTab(tab)}
+                android_ripple={{ color: OMS_COLORS.primaryBorder, borderless: false }}
+                accessibilityRole="button"
+                accessibilityState={{ selected: isActive }}
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  backgroundColor: isActive ? OMS_COLORS.primary : '#FFFFFF',
+                  paddingVertical: 0,
+                  paddingHorizontal: 8,
+                  borderRadius: 12,
+                  height: 52,
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  borderWidth: 1,
+                  borderColor: OMS_COLORS.primary,
+                }}>
+                <Text
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.82}
+                  style={{
+                    color: isActive ? '#FFFFFF' : OMS_COLORS.primary,
+                    fontSize: 12,
+                    fontWeight: '800',
+                    textAlign: 'center',
+                    textTransform: 'capitalize',
+                  }}>
+                  {tab === 'customers' ? 'Customers' : 'Create Order'}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
       </View>
 
       {/* ---------- CUSTOMERS TAB ---------- */}
       {activeTab === 'customers' && (
-        <ScrollView style={{ flex: 1, paddingHorizontal: 16 }}
-          contentContainerStyle={{ paddingBottom: 100 }}>
-          <Text style={{ fontSize: 22, fontWeight: '500', marginBottom: 8 }}>
-            Select Customer
-          </Text>
+        <KeyboardAwareScrollView
+          style={{ flex: 1, paddingHorizontal: 12 }}
+          contentContainerStyle={{ paddingBottom: 100 }}
+          extraScrollHeight={36}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 8, gap: 10 }}>
+            <Text style={{ flex: 1, fontSize: 20, fontWeight: '800', color: '#FFFFFF' }}>
+              Select Customer
+            </Text>
+          </View>
 
           <TextInput
             placeholder="Search customers..."
             style={{
-              borderWidth: 0.5, borderColor: '#D1D5DB', borderRadius: 10,
-              paddingHorizontal: 14, height: 42, backgroundColor: '#fff',
+              borderWidth: 1,
+              borderColor: 'rgba(255,255,255,0.72)',
+              borderRadius: 14,
+              paddingHorizontal: 14,
+              height: 46,
+              backgroundColor: 'rgba(255,255,255,0.94)',
               marginBottom: 12,
             }}
+            placeholderTextColor={OMS_COLORS.textSubtle}
             onChangeText={handleRetailerSearch}
           />
 
+          {customersLoading ? (
+            <ScreenSkeleton rows={4} />
+          ) : customersError ? (
+            <View style={{ paddingVertical: 28, alignItems: 'center' }}>
+              <Text style={{ color: '#B91C1C', textAlign: 'center' }}>{customersError}</Text>
+            </View>
+          ) : filteredRetailers.length === 0 ? (
+            <View style={{ paddingVertical: 36, alignItems: 'center' }}>
+              <Ionicons name="people-outline" size={34} color="#CBD5E1" />
+              <Text style={{ color: '#94A3B8', marginTop: 8 }}>No customers found.</Text>
+            </View>
+          ) : (
           <FlatList
             data={filteredRetailers}
             keyExtractor={(r) => r.id.toString()}
@@ -316,19 +722,24 @@ export default function StaffScreen() {
               <Pressable
                 onPress={() => handleSelectRetailer(item)}
                 style={{
-                  backgroundColor: '#fff', padding: 14, marginBottom: 10,
-                  borderRadius: 12, elevation: 2,
+                  backgroundColor: OMS_COLORS.surfaceTint,
+                  padding: 14,
+                  marginBottom: 10,
+                  borderRadius: 18,
+                  elevation: 2,
                   borderWidth: selectedRetailer?.id === item.id ? 2 : 0.5,
-                  borderColor: selectedRetailer?.id === item.id ? '#3b82f6' : '#E5E7EB',
-                }}
-              >
+                  borderColor: selectedRetailer?.id === item.id ? OMS_COLORS.accent : 'rgba(255,255,255,0.72)',
+                }}>
                 <View style={{ flexDirection: 'row' }}>
                   <View style={{ flex: 1, paddingRight: 12 }}>
-                    <Text style={{ fontWeight: '600', fontSize: 15 }}>{item.store_name}</Text>
+                    <Text style={{ fontWeight: '600', fontSize: 15 }}>
+                      {item.ledger || item.name}
+                    </Text>
                     <Text style={{ color: '#6B7280', marginTop: 2 }}>
                       {item.name} · {item.phone}
                     </Text>
-                    <Text style={{ color: '#9CA3AF', marginTop: 2, fontSize: 12 }}
+                    <Text
+                      style={{ color: '#9CA3AF', marginTop: 2, fontSize: 12 }}
                       numberOfLines={2}>
                       {item.address}
                     </Text>
@@ -336,14 +747,17 @@ export default function StaffScreen() {
 
                   <View style={{ justifyContent: 'center', alignItems: 'center', gap: 8 }}>
                     <Pressable
-                      onPress={() => item.phone
-                        ? Linking.openURL(`tel:${item.phone}`)
-                        : showAlert('Phone not available')}
+                      onPress={() =>
+                        item.phone
+                          ? Linking.openURL(`tel:${item.phone}`)
+                          : showAlert('Phone not available')
+                      }
                       style={{
-                        backgroundColor: '#3b82f6', padding: 8,
-                        borderRadius: 50, marginBottom: 6,
-                      }}
-                    >
+                        backgroundColor: OMS_COLORS.primary,
+                        padding: 8,
+                        borderRadius: 50,
+                        marginBottom: 6,
+                      }}>
                       <Ionicons name="call" size={18} color="white" />
                     </Pressable>
                     <Pressable
@@ -355,8 +769,7 @@ export default function StaffScreen() {
                         });
                         if (url) Linking.openURL(url);
                       }}
-                      style={{ backgroundColor: '#10b981', padding: 8, borderRadius: 50 }}
-                    >
+                      style={{ backgroundColor: OMS_COLORS.accentDark, padding: 8, borderRadius: 50 }}>
                       <Ionicons name="location" size={18} color="white" />
                     </Pressable>
                   </View>
@@ -364,68 +777,116 @@ export default function StaffScreen() {
               </Pressable>
             )}
           />
-        </ScrollView>
+          )}
+          <PageControls key={customerPage.key} page={customerPage.page} total={customerPage.total} hasMore={customerPage.hasMore} loading={customerPage.loading} go={customerPage.go} refresh={customerPage.refresh} />
+        </KeyboardAwareScrollView>
       )}
 
       {/* ---------- PRODUCTS TAB ---------- */}
-      {activeTab === 'products' && (
-        <ScrollView style={{ flex: 1, paddingHorizontal: 16 }}
-          contentContainerStyle={{ paddingBottom: 100 }}>
-
+      {activeTab === 'products' ? (
+        <KeyboardAwareScrollView
+          style={{ flex: 1, paddingHorizontal: 12 }}
+          contentContainerStyle={{ paddingBottom: 100 }}
+          extraScrollHeight={36}>
           {/* Selected customer banner / warning */}
           {selectedRetailer ? (
-            <View style={{
-              backgroundColor: '#EFF6FF', borderRadius: 10,
-              padding: 10, marginBottom: 12, flexDirection: 'row',
-              alignItems: 'center', borderWidth: 0.5, borderColor: '#BFDBFE',
-            }}>
-              <Ionicons name="storefront-outline" size={18} color="#3b82f6" />
-              <Text style={{ marginLeft: 8, color: '#1D4ED8', fontWeight: '500', flex: 1 }}>
-                {selectedRetailer.store_name}
+            <View
+              style={{
+                backgroundColor: 'rgba(255,255,255,0.9)',
+                borderRadius: 14,
+                padding: 10,
+                marginBottom: 12,
+                flexDirection: 'row',
+                alignItems: 'center',
+                borderWidth: 0.5,
+                borderColor: OMS_COLORS.primaryBorder,
+              }}>
+              <Ionicons name="storefront-outline" size={18} color={OMS_COLORS.primary} />
+              <Text style={{ marginLeft: 8, color: OMS_COLORS.primaryDeep, fontWeight: '700', flex: 1 }}>
+                {selectedRetailer.ledger || selectedRetailer.name}
               </Text>
               <Pressable onPress={() => setActiveTab('customers')}>
-                <Text style={{ color: '#3b82f6', fontSize: 12 }}>Change</Text>
+                <Text style={{ color: OMS_COLORS.accentDark, fontSize: 12, fontWeight: '700' }}>Change</Text>
               </Pressable>
             </View>
           ) : (
-            <View style={{
-              backgroundColor: '#FFFBEB', borderRadius: 10,
-              padding: 10, marginBottom: 12, flexDirection: 'row',
-              alignItems: 'center', borderWidth: 0.5, borderColor: '#FCD34D',
-            }}>
-              <Ionicons name="warning-outline" size={18} color="#D97706" />
-              <Text style={{ marginLeft: 8, color: '#92400E', flex: 1, fontSize: 13 }}>
+            <View
+              style={{
+                backgroundColor: OMS_COLORS.primarySoft,
+                borderRadius: 14,
+                padding: 10,
+                marginBottom: 12,
+                flexDirection: 'row',
+                alignItems: 'center',
+                borderWidth: 0.5,
+                borderColor: OMS_COLORS.primaryBorder,
+              }}>
+              <Ionicons name="information-circle-outline" size={18} color={OMS_COLORS.primary} />
+              <Text
+                style={{ marginLeft: 8, color: OMS_COLORS.primaryDeep, flex: 1, fontSize: 13 }}>
                 Please select a customer first
               </Text>
               <Pressable onPress={() => setActiveTab('customers')}>
-                <Text style={{ color: '#D97706', fontSize: 12, fontWeight: '600' }}>
+                <Text style={{ color: OMS_COLORS.primary, fontSize: 12, fontWeight: '600' }}>
                   Go →
                 </Text>
               </Pressable>
             </View>
           )}
 
+          {canManageProducts && Number(user?.business_type_id) === 3 ? (
+            <Pressable
+              onPress={handleImportDairyProducts}
+              style={{
+                minHeight: 44,
+                borderRadius: 14,
+                marginBottom: 12,
+                paddingHorizontal: 14,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: 8,
+                backgroundColor: OMS_COLORS.primary,
+              }}>
+              <Ionicons name="cloud-upload-outline" size={18} color="#FFFFFF" />
+              <Text style={{ color: '#FFFFFF', fontSize: 13, fontWeight: '800' }}>
+                Import Dairy Products Excel
+              </Text>
+            </Pressable>
+          ) : null}
+
           {/* Cart summary strip */}
           {totalCartItems > 0 && (
-            <View style={{
-              flexDirection: 'row', alignItems: 'center',
-              backgroundColor: '#EFF6FF', borderRadius: 10,
-              padding: 10, marginBottom: 12,
-              borderWidth: 0.5, borderColor: '#BFDBFE', gap: 8,
-            }}>
-              <View style={{
-                width: 22, height: 22, borderRadius: 11,
-                backgroundColor: '#185FA5', alignItems: 'center', justifyContent: 'center',
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                backgroundColor: 'rgba(255,255,255,0.9)',
+                borderRadius: 14,
+                padding: 10,
+                marginBottom: 12,
+                borderWidth: 0.5,
+                borderColor: OMS_COLORS.primaryBorder,
+                gap: 8,
               }}>
+              <View
+                style={{
+                  width: 22,
+                  height: 22,
+                  borderRadius: 11,
+                  backgroundColor: OMS_COLORS.primary,
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}>
                 <Text style={{ fontSize: 11, color: '#fff', fontWeight: '500' }}>
                   {totalCartItems}
                 </Text>
               </View>
-              <Text style={{ flex: 1, fontSize: 13, color: '#185FA5', fontWeight: '500' }}>
+              <Text style={{ flex: 1, fontSize: 13, color: OMS_COLORS.primaryDeep, fontWeight: '700' }}>
                 {totalCartItems} item{totalCartItems !== 1 ? 's' : ''} in cart
               </Text>
-              <Text style={{ fontSize: 13, fontWeight: '500', color: '#185FA5' }}>
-                ₹{cartTotalPrice}
+              <Text style={{ fontSize: 13, fontWeight: '800', color: OMS_COLORS.primaryDeep }}>
+                {cartPricing.loading ? 'Refreshing prices...' : cartPricing.error ? 'Price refresh failed' : `₹${cartTotalPrice}`}
               </Text>
             </View>
           )}
@@ -436,21 +897,43 @@ export default function StaffScreen() {
             value={search}
             onChangeText={handleProductSearch}
             style={{
-              borderWidth: 0.5, borderColor: '#D1D5DB', borderRadius: 10,
-              paddingHorizontal: 14, height: 42, backgroundColor: '#fff',
-              marginBottom: 14, fontSize: 14, color: '#111827',
+              borderWidth: 1,
+              borderColor: 'rgba(255,255,255,0.72)',
+              borderRadius: 14,
+              paddingHorizontal: 14,
+              height: 42,
+              backgroundColor: 'rgba(255,255,255,0.94)',
+              marginBottom: 14,
+              fontSize: 14,
+              color: '#111827',
             }}
             placeholderTextColor="#9CA3AF"
           />
 
+          <View style={{ flexDirection: 'row' }}>
+            <Picker style={{ flex: 1 }} selectedValue={category} onValueChange={setCategory} accessibilityLabel="Category filter">
+              <Picker.Item label="All categories" value="" />
+              {productPage.filters.categories.map(value => <Picker.Item key={value} label={value} value={value} />)}
+            </Picker>
+            <Picker style={{ flex: 1 }} selectedValue={brand} onValueChange={setBrand} accessibilityLabel="Brand filter">
+              <Picker.Item label="All brands" value="" />
+              {productPage.filters.brands.map(value => <Picker.Item key={value} label={value} value={value} />)}
+            </Picker>
+          </View>
           {loading ? (
-            <ActivityIndicator size="large" color="#185FA5" style={{ marginTop: 40 }} />
+            <ScreenSkeleton rows={4} />
+          ) : productsError ? (
+            <Text style={{ textAlign: 'center', color: '#B91C1C', marginTop: 40 }}>
+              {productsError}
+            </Text>
           ) : filteredProducts.length === 0 ? (
             <Text style={{ textAlign: 'center', color: '#9CA3AF', marginTop: 40 }}>
               No products found.
             </Text>
           ) : (
             <FlatList
+              key={`products-${columns}`}
+              numColumns={columns}
               data={filteredProducts}
               keyExtractor={(item) => item.id.toString()}
               renderItem={renderItem}
@@ -461,8 +944,9 @@ export default function StaffScreen() {
               removeClippedSubviews={true}
             />
           )}
-        </ScrollView>
-      )}
+          <PageControls key={productPage.key} page={productPage.page} total={productPage.total} hasMore={productPage.hasMore} loading={productPage.loading} go={productPage.go} refresh={productPage.refresh} />
+        </KeyboardAwareScrollView>
+      ) : null}
 
       {/* ✅ CustomAlert is OUTSIDE all tab conditionals so the Modal
           always renders at the SafeAreaView level with proper full-screen
@@ -474,6 +958,6 @@ export default function StaffScreen() {
       />
 
       <BottomTabNavigator />
-    </SafeAreaView>
+    </AppScreen>
   );
 }
